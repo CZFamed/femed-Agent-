@@ -19,10 +19,16 @@ dev = [
 # 说明：项目根 = 仓库根，Python 包为 `pulse/`（见 AGENTS.md §6 命名规范）。
 # 测试从仓库根运行： python -m pytest
 [tool.pytest.ini_options]
-testpaths = ["pulse/tests"]
+# 注意：不要写成 ["pulse/tests"]。
+# 按 AGENTS.md §2.1，各域单测位于 pulse/services/<domain>/tests/，
+# 而跨域契约/集成测试位于 pulse/tests/。若只列 pulse/tests，
+# 各域单测会被静默排除（pytest 仍显示通过），制造"虚假完成"。
+testpaths = ["pulse"]
 pythonpath = ["."]
 asyncio_mode = "auto"
-addopts = "-q"
+# --import-mode=importlib：各域的 tests/ 目录不需要 __init__.py，
+# 也避免两个域出现同名测试文件（如 test_gateway.py）时互相覆盖导致收集报错。
+addopts = "-q --import-mode=importlib"
 
 [tool.ruff]
 line-length = 100

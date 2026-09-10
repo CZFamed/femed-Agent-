@@ -7,6 +7,18 @@
 
 ## 0. 项目定位
 
+### 0.1 身份与角色边界（子 agent 必读）
+
+- 本项目有 **root（集成与治理者）** 与 **6 个子 agent（A1–A6）**。**你是子 agent，你不是 root。**
+- 子 agent 的职责是**写自己域内的代码**，不是写文档、不是改治理文件、不是协调其他 agent。
+- **不要 spawn 子 agent。** 需要更多人力 → 消息 root。
+- **不要修改** `AGENTS.md` / `pyproject.toml` / `pulse/contracts/` / `pulse/docs/` / `pulse/tasks/` / `pulse/shared/`。
+- **不要创建 `.md` 文档**（除非 root 明确要求）。产出物必须是代码与测试。
+
+> 这条规则来自 2026-09-10 的一次真实事故：一个子 agent 继承了 root 的完整上下文后**把自己当成了 root**，
+> 转而去写治理文档、修改 `pyproject.toml`、甚至"中断并重新派工"其他 agent，导致三个工作域 30 分钟内
+> **零代码产出**。详见 `pulse/docs/多Agent协同开发方案.md` §7.1。
+
 为**菲美得**构建的多平台社媒内容生成与自动发布 Agent。
 
 | 项目 | 内容 |
@@ -24,8 +36,9 @@
 2. `Pulse需求拆解_v0.2.1.md` — 需求条目化结果
 3. `Pulse海外社媒Agent开发文档_v0.2.1.docx` — 原始需求与设计
 4. `pulse/contracts/INTERFACES.md` — **工程接口契约（冻结，只读）**
-5. `pulse/docs/多Agent协同开发方案.md` — 分工与协同规则
-6. `pulse/tasks/TASKS.md` — 任务板与状态
+5. `pulse/docs/多Agent协同开发方案.md` — 分工原理与波次设计
+6. `pulse/docs/dispatch/` — **子 agent 派工单（执行层）**：开工前读自己那份
+7. `pulse/tasks/TASKS.md` — 任务板与状态
 
 ---
 
@@ -45,8 +58,14 @@
 | `pulse/api/`、`pulse/console/` | A5 Platform | 接口层与控制台 |
 | `pulse/tests/` | A6 Verifier | **跨域**契约/集成/风控测试 |
 | `pulse/shared/` | **root** | 跨域共用类型（只读给他人） |
+| `pulse/services/__init__.py` | **root** | 三个域的父包（只读给他人） |
+| 根级配置 `pyproject.toml`、`conftest.py`、`.gitignore` | **root** | 影响所有域，**子 agent 一律不改** |
 
 需要改动非自己拥有的目录时：**发消息给对应所有者或 root**，不要直接改。
+
+> 第 2 节的两个易踩点：① `pyproject.toml` 的 `testpaths` / `addopts` 是全局的，
+> 改它会让**所有人的**测试收集行为变化；② 各域单测**不需要** `__init__.py`
+> （已启用 `--import-mode=importlib`，跨域同名测试文件不会互相覆盖）。
 
 ### 2.1 单元测试放哪（避免三方在 `pulse/tests/` 撞车）
 
@@ -56,6 +75,21 @@
 | 跨域契约 / 集成 / 风控演练 | `pulse/tests/` | A6 |
 
 **各域的单元测试不要写进 `pulse/tests/`** —— 那里是 A6 的地盘，会被覆盖。
+
+### 2.2 子 agent 任务名规范
+
+spawn 时使用固定任务名，便于 root 定位与升级：
+
+| 角色 | 任务名 |
+| --- | --- |
+| A1 内容生产 | `a1_content` |
+| A2 发布网关 | `a2_publish` |
+| A3 调度与账号 | `a3_scheduler` |
+| A4 合规治理 | `a4_compliance` |
+| A5 平台前端 | `a5_platform` |
+| A6 独立验证 | `a6_verifier` |
+
+每个子 agent 开工前必须读：`AGENTS.md`（本文件）→ 自己的派工单 `pulse/docs/dispatch/A*.md` → 契约相关章节。
 
 ---
 
@@ -105,10 +139,14 @@ D:\agent开发\菲美得\.venv\Scripts\python.exe
 
 ```powershell
 $env:PYTHONIOENCODING = 'utf-8'      # 避免中文输出乱码
-& "D:\agent开发\菲美得\.venv\Scripts\python.exe" -m pytest
+& "D:\agent开发\菲美得\.venv\Scripts\python.exe" -m pytest -p no:cacheprovider
 ```
 
 导入路径为 `pulse.services.<domain>` / `pulse.shared.*`，与 §6 命名规范一致。
+
+**`-p no:cacheprovider` 不是可选项**：多个子 agent 共享同一个工作区，同时跑 pytest 会争写同一个
+`.pytest_cache`。收集范围由 `pyproject.toml` 的 `testpaths = ["pulse"]` 决定（同时覆盖
+`pulse/tests/` 与 `pulse/services/*/tests/`）。
 
 ### 5.3 装新依赖
 
@@ -121,8 +159,22 @@ uv pip install --python "D:\agent开发\菲美得\.venv\Scripts\python.exe" <包
 
 ### 5.4 已验证的基线
 
-`pulse/shared/` 契约层已通过 16 项校验（含时区、平台必填项、授权状态、合规拦截、幂等约束）。
-若你的改动让这些校验失败，**先怀疑自己的实现，不要改 `pulse/shared/`**。
+**基线测试已存在且全绿**：`pulse/shared/tests/test_contract_baseline.py`（20 项，root 所有）。
+
+覆盖：`Platform` 白名单（VK / TikTok 不得进入枚举）、`scheduled_at` 时区偏移、LinkedIn / YouTube 必填
+`options`、素材 `license_status`（禁止 `pending` 发布）、`compliance.blocked` 硬拦截、hashtag 规范、
+`PublishResult` 的"受理 ≠ 发布"断言、`ErrorClass` 三分法（可重试 / 不可重试 / 轮询）、ID 前缀与时间前缀单调性、序列化。
+
+```powershell
+& "D:\agent开发\菲美得\.venv\Scripts\python.exe" -m pytest -p no:cacheprovider pulse/shared/tests
+```
+
+若你的改动让这些校验失败，**先怀疑自己的实现，不要改 `pulse/shared/`**（属 root 所有）。
+确信某条断言与 `contracts/INTERFACES.md` 冲突 → 消息 root，附契约条款编号。
+
+> **历史澄清（避免再次误传）**：本文曾写"`pulse/shared/` 已通过 16 项校验"，但当时仓库中并不存在测试文件；
+> 随后又被改写成"当前没有任何自动化测试"。两者都不准确。**以上面这段为准**——基线是 20 项，位置在
+> `pulse/shared/tests/`，且属于 root 自己的域（各域单测仍在 `pulse/services/<域>/tests/`，A6 的跨域测试在 `pulse/tests/`）。
 
 ---
 
@@ -131,7 +183,9 @@ uv pip install --python "D:\agent开发\菲美得\.venv\Scripts\python.exe" <包
 - 每个模块必须**可独立运行**：有单元测试，测试通过才算交付。
 - 公开函数/类需类型标注与简短 docstring。
 - 不引入未在契约中定义的外部依赖；需要新增依赖 → 消息 root。
-- 交付时在消息中报告：`改动的文件清单` / `验证方式与结果` / `未决问题`。
+- 交付时**必须**按 `pulse/docs/dispatch/README.md` §4 的模板回报，六节缺一不可：
+  `改动文件清单` / `验证方式与结果` / `契约对齐声明` / `未决问题` / `越界声明` / `依赖请求`。
+  其中"验证方式与结果"必须是**可直接复制运行的命令 + 真实输出**——没有它，"已完成"一律退回。
 
 ---
 

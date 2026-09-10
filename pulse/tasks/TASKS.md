@@ -14,6 +14,10 @@
 | A2 发布网关 | `/root/a2_publish` | **IN_PROGRESS** | 2026-09-10 |
 | A3 调度与账号 | `/root/a3_scheduler` | **IN_PROGRESS** | 2026-09-10 |
 
+W1 三个域的**开工指令与验收标准**见派工单 `pulse/docs/dispatch/A1_content.md` / `A2_publish.md` / `A3_scheduler_identity.md`
+（**执行层唯一真源**；`多Agent协同开发方案.md` §9 为速查，冲突时以派工单为准，见该文 §9.8）。
+并发位上限 4（含 root），W1 已占满——**W1 期间不得再拉 A4/A5/A6 进场**。
+
 W1 全部交付后 → 进入 W2（A4 合规 / A5 平台前端 / A6 验证）。
 
 ---
@@ -25,8 +29,45 @@ W1 全部交付后 → 进入 W2（A4 合规 / A5 平台前端 / A6 验证）。
 | W0-1 | 接口契约冻结 v1.0 | Root | **DONE** | `pulse/contracts/INTERFACES.md` |
 | W0-2 | 治理文件与所有权约束 | Root | **DONE** | `AGENTS.md` |
 | W0-3 | 协同方案与波次计划 | Root | **DONE** | `pulse/docs/多Agent协同开发方案.md` |
-| W0-4 | 目录骨架与 shared 类型 | Root | **IN_PROGRESS** | `pulse/shared/` |
+| W0-4 | 目录骨架与 shared 类型 | Root | **DONE** | `pulse/shared/`（4 文件，导入与契约版本校验通过） |
+| W0-6 | 子 Agent 任务书（分工落地到可验收粒度） | Root | **DONE** | 协同方案 §9 |
+| W0-7 | 根级共享文件归属 + pytest 收集口径 | Root | **DONE** | `pyproject.toml` `testpaths=["pulse"]`、`pulse/services/__init__.py` |
+| W0-8 | 共享契约基线测试常驻化 | Root | **DONE** | `pulse/shared/tests/test_contract_baseline.py`（20 项，全绿） |
+| W0-9 | 子 Agent 派工单（执行层） | Root | **DONE** | `pulse/docs/dispatch/`（README + A1–A6 六份） |
 | W0-5 | Git 仓库初始化与首次提交 | Root | **TODO** | 待 W1 交付后一并提交 |
+
+### W0-9 说明（分工定稿）
+
+分工已落成两层：`pulse/docs/多Agent协同开发方案.md` 讲**为什么这么切**（原理层），
+`pulse/docs/dispatch/` 讲**每个 agent 具体干什么、怎么算干完**（执行层）。
+
+- 真源优先级：`AGENTS.md` > `contracts/INTERFACES.md` > `dispatch/A*.md` > 协同方案 §9 > 本任务板。
+- 派工单含协同方案没有的**已核实事实**：素材库计数（313 个媒体文件 / 327 份描述索引）、
+  描述文件 `source_folder` 的路径重映射陷阱、平台接入现状表、YouTube 配额上限。
+- 交付报告模板统一为 `dispatch/README.md` §4 的**六节**（改动文件清单 / 验证方式与结果 /
+  契约对齐声明 / 未决问题 / 越界声明 / 依赖请求）。
+- **本轮治理修正**：`AGENTS.md` §5.4 的"当前没有任何自动化测试"与 `dispatch/A6_verifier.md` §4
+  的"基线尚未建立"均为**过时表述**，已按 W0-8 的实际交付（20 项基线）修正。
+
+### W0-7 说明（影响所有域的根级改动）
+
+首轮并行时，`pyproject.toml` 的 `testpaths` 从 `["pulse/tests"]` 改为 `["pulse"]`。
+
+- **为什么必须改**：域内单测在 `pulse/services/<域>/tests/`，若 `testpaths` 只列 `pulse/tests`，
+  各域单测会被**静默排除**——`pytest` 依然显示绿色，制造典型"虚假完成"。
+- **归属**：`pyproject.toml` / `conftest.py` / `.gitignore` / `pulse/services/__init__.py` 一律归 **root**。
+  子 agent 需要变更 → 消息 root（本次改动已由 root 追认）。
+- **域内自测命令**：`& ".venv\Scripts\python.exe" -m pytest pulse/services/<域>`
+
+### W0-8 说明（子 agent 必读）
+
+- 共享层基线测试落在 **`pulse/shared/tests/`**（root 自己的域），共 20 项，覆盖：枚举白名单、
+  平台必填项、时区偏移、素材授权、合规硬拦截、`受理≠发布` 约束、错误分级三分法、ID 前缀与时间前缀单调性、序列化。
+- **若你的改动让 `pulse/shared/tests/` 失败，先怀疑自己的实现**，不要改 `pulse/shared/`。
+- 例外：20 项里断言的是**契约语义**而非实现细节。若你确信某条断言与 `contracts/INTERFACES.md` 冲突，
+  消息 root 并附契约条款编号。
+- 原 `pulse/services/content/tests/test_collection_probe.py`（root 的临时收集探针）已删除，
+  其职责由本测试文件接管——**不要重新创建探针**。
 
 ---
 
@@ -129,3 +170,42 @@ W1 全部交付后 → 进入 W2（A4 合规 / A5 平台前端 / A6 验证）。
 
 > **M1 验收标准**：单账号单平台跑通「生成 → 审核 → 发布 → 回执」闭环。
 > 目标平台：**LinkedIn**（P0-A）。发布可先走半自动，但闭环状态必须完整可追溯。
+
+---
+
+## W1 执行记录（2026-09-10）
+
+### 第一轮：失败（角色漂移）
+
+| 域 | 任务名 | 结果 | 说明 |
+| --- | --- | --- | --- |
+| A1 内容生产 | `/root/a1_content` | **失败** | 30 分钟零代码产出 |
+| A2 发布网关 | `/root/a2_publish` | **失败** | 30 分钟零代码产出 |
+| A3 调度与账号 | `/root/a3_scheduler` | **失败（越界）** | 继承 root 上下文后自认 root，转写治理文档并改 `pyproject.toml`/`AGENTS.md`，产出 6 份派工单；代码零产出 |
+
+**真因**：派生时用了 `fork_turns="all"`，子 agent 继承 root 的完整对话上下文 → 角色漂移。
+已记入 `docs/多Agent协同开发方案.md` §7.1，并写入 `AGENTS.md §0.1`（身份边界）。
+
+### 第二轮：修正后成功
+
+| 域 | 任务名 | 派生方式 | 结果 |
+| --- | --- | --- | --- |
+| A2 发布网关 | `/root/a2_publish_v2` | **`fork_turns="none"`** | ✅ **80 条单测全绿** |
+
+**A2 v2 交付物**（`pulse/services/publish/`，约 20 个文件）：
+`base.py`（契约 §4 的 ABC，签名已逐字核对）、`gateway.py`、`errors.py`、`state.py`、`store.py`、
+`transport.py`、`semi_auto.py`、`adapters/{fake,linkedin,youtube}.py` + 6 个测试文件
+
+**关键验收已通过**（root 独立复核，非自述）：
+- `pytest pulse/services/publish` → **80 passed**
+- 全仓库 `pytest` → **100 passed**（80 + 20 契约基线）
+- 最高风险规则已实现并有显式断言：平台受理 → **只进 `pending_finalize`**，绝不直接置 `published`；超时只告警，**绝不自动发布**
+
+**对照结论**：`fork_turns="all"` → 30 分钟零产出；`fork_turns="none"` → 5 分钟产出 20 个文件、80 条测试。
+后续所有工作域一律用 `fork_turns="none"`。
+
+### 待办
+
+- A1 内容生产、A3 调度与账号**尚未重新启动**（用 `fork_turns="none"` 重开）
+- W2（A4 合规 / A5 平台前端 / A6 验证）未启动
+- `W0-5` Git 提交：见下方提交记录
