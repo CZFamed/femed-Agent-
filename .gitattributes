@@ -1,0 +1,29 @@
+# 统一行尾：仓库内一律 LF，避免 Windows / macOS 协作时出现整文件 diff。
+# 说明：core.autocrlf 在部分机器上是 true，用本属性覆盖，保证检出结果一致。
+* text=auto eol=lf
+
+# 二进制格式：不做行尾转换，也不参与文本 diff。
+*.docx binary
+*.doc  binary
+*.xlsx binary
+*.xls  binary
+*.pdf  binary
+*.zip  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+*.mp4  binary
+*.mov  binary
+*.mp3  binary
+*.wav  binary
+
+# 文本格式的 diff 语义提示
+*.md diff=markdown
+
+# 锁文件/生成物：折叠 diff，降低评审噪音
+uv.lock            -diff
+**/__pycache__/**  export-ignore
+

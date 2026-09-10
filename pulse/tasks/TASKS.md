@@ -34,7 +34,10 @@ W1 全部交付后 → 进入 W2（A4 合规 / A5 平台前端 / A6 验证）。
 | W0-7 | 根级共享文件归属 + pytest 收集口径 | Root | **DONE** | `pyproject.toml` `testpaths=["pulse"]`、`pulse/services/__init__.py` |
 | W0-8 | 共享契约基线测试常驻化 | Root | **DONE** | `pulse/shared/tests/test_contract_baseline.py`（20 项，全绿） |
 | W0-9 | 子 Agent 派工单（执行层） | Root | **DONE** | `pulse/docs/dispatch/`（README + A1–A6 六份） |
-| W0-5 | Git 仓库初始化与首次提交 | Root | **TODO** | 待 W1 交付后一并提交 |
+| W0-5 | Git 仓库初始化与首次提交 | Root | **DONE** | `main` 分支；提交见文末"提交记录" |
+| W0-10 | 版本元数据统一为 **V1.0.0** | Root | **DONE** | `pyproject.toml`、`pulse/__init__.py`、`test_release_version.py` |
+| W0-11 | 变更记录与仓库说明 | Root | **DONE** | `CHANGELOG.md`、`README.md`、`.gitattributes` |
+| W0-12 | 发布标签与 CI | Root | **DONE** | 标签 `v1.0.0`；`.github/workflows/ci.yml` |
 
 ### W0-9 说明（分工定稿）
 
@@ -209,3 +212,41 @@ W1 全部交付后 → 进入 W2（A4 合规 / A5 平台前端 / A6 验证）。
 - A1 内容生产、A3 调度与账号**尚未重新启动**（用 `fork_turns="none"` 重开）
 - W2（A4 合规 / A5 平台前端 / A6 验证）未启动
 - `W0-5` Git 提交：见下方提交记录
+
+---
+
+## 版本管理（V1.0.0 · 2026-09-10）
+
+**当前版本 = V1.0.0**（`git tag` 可查）。三处版本号必须一致，由
+`pulse/shared/tests/test_release_version.py` 守护（5 项）：
+
+| 位置 | 当前取值 | 真源属性 |
+| --- | --- | --- |
+| `pyproject.toml` | `1.0.0` | `[project] version` |
+| `pulse/__init__.py` | `1.0.0` | `pulse.__version__` |
+| `CHANGELOG.md` | `## [1.0.0]` | 逐版本条目 |
+| 契约版本（独立于产品版本） | `1.0` | `pulse.shared.CONTRACT_VERSION` |
+
+### 提交记录
+
+| 提交 | 内容 |
+| --- | --- |
+| `879b3f8` | W0：冻结接口契约 v1.0 + 多 Agent 协同治理基线 |
+| `0612960` | W1：A2 发布网关域交付（80 测试通过）+ 治理补强与 fork 策略修正 |
+
+### 发布标签
+
+| 标签 | 说明 |
+| --- | --- |
+| `v1.0.0` | 契约冻结 + 发布网关域交付；含版本元数据、变更记录与 CI |
+
+### 远端（GitHub）
+
+`main` 推送到 GitHub 后，`.github/workflows/ci.yml` 会在推送 / PR 时跑全量 pytest，
+在推送 `v*` 标签时自动创建 Release。本机直连 GitHub 被阻断，需经代理端口
+`127.0.0.1:7897`（见 `README.md` §4.4）。
+
+### 升版口径
+
+契约冻结或对外行为不兼容 → 升 `MAJOR`；向后兼容的新增 → 升 `MINOR`；修缺陷 → 升 `PATCH`。
+每次升版同步 `pyproject.toml` / `pulse/__init__.py` / `CHANGELOG.md` 三处，再打 `vX.Y.Z` 带注释标签。
