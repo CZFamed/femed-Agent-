@@ -1,0 +1,30 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ---- 环境与密钥 ----
+.env
+.env.*
+*.pem
+*.key
+# 凭据绝不入库（契约：Token 加密存储、永不落日志）
+credentials*.json
+
+# ---- 业务数据（体积大，不入代码库）----
+# 素材与调研资料属项目数据，不随代码版本管理
+菲美得产品图片/
+外贸公司/
+RAG知识库/
+
+# ---- 本地工具 ----
+.uv-cache/
+.DS_Store
+Thumbs.db
