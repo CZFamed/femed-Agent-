@@ -33,7 +33,7 @@
 系统 `python` / `python3` 是 Windows Store 占位符，**不可用**。唯一可用解释器：
 
 ```
-D:\agent开发\菲美得\.venv\Scripts\python.exe
+D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 ```
 
 ### 2.2 运行测试
@@ -42,7 +42,7 @@ D:\agent开发\菲美得\.venv\Scripts\python.exe
 
 ```powershell
 $env:PYTHONIOENCODING = 'utf-8'      # 避免中文输出乱码
-& "D:\agent开发\菲美得\.venv\Scripts\python.exe" -m pytest -p no:cacheprovider
+& "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe" -m pytest -p no:cacheprovider
 ```
 
 `-p no:cacheprovider` 不是可选项：多个 agent 共享工作区，同时跑 pytest 会争写 `.pytest_cache`。
@@ -51,7 +51,7 @@ $env:PYTHONIOENCODING = 'utf-8'      # 避免中文输出乱码
 
 ```powershell
 $env:UV_CACHE_DIR = Join-Path $env:TEMP 'uv-cache'
-uv pip install --python "D:\agent开发\菲美得\.venv\Scripts\python.exe" <包名>
+uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe" <包名>
 ```
 
 ---
@@ -69,6 +69,23 @@ uv pip install --python "D:\agent开发\菲美得\.venv\Scripts\python.exe" <包
 | `pulse/api/`、`pulse/console/` | 接口层与控制台 |
 | `pulse/tests/` | 跨域契约 / 集成 / 风控测试 |
 | `pulse/docs/`、`pulse/tasks/` | 治理文档与任务板 |
+
+### 3.1 仓库边界
+
+**仓库根 = 本目录 `D:\agent开发\菲美得\agent`。** 上层目录 `D:\agent开发\菲美得\` 是工作区，
+存放**不入版本库**的业务资产：
+
+| 位置 | 内容 | 是否入库 |
+| --- | --- | --- |
+| `agent/` | 代码、契约、治理文档、CI | **是**（仓库根） |
+| `agent/RAG知识库/` | 素材描述索引（327 份 `.md`），供内容域按语义选素材 | 否（体积大） |
+| `agent/.venv/` | 本地 Python 解释器（唯一可用） | 否 |
+| `../菲美得产品图片/` | 实拍素材 336 个文件，产品图唯一来源 | 否（在仓库外） |
+| `../外贸公司/` | 客群调研与业务资料 | 否（在仓库外） |
+
+> 内容域引用素材时，路径基准是**工作区**而不是仓库根：`../菲美得产品图片/…`。
+> 描述文件 front-matter 里的 `source_folder` 写的是 `D:/菲美得/…`，与本机不符，
+> 选用器必须做前缀重映射（见 `pulse/docs/dispatch/A1_content.md` §4）。
 
 ---
 
@@ -161,4 +178,3 @@ TLS 若报 `schannel: AcquireCredentialsHandle failed`，改用 OpenSSL 后端�
 4. 工业件禁止用文生图生成产品图，产品图只用实拍素材。
 5. 不伪造数据：缺失标注 `TODO(need-real-data)`。
 6. 英文优先：客户文案以英语为主，中英对照供审校。
-

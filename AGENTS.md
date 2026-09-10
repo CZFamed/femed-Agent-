@@ -123,6 +123,21 @@ spawn 时使用固定任务名，便于 root 定位与升级：
 
 ## 5. 环境与运行（**开工前必读，否则会卡住**）
 
+### 5.0 仓库边界（先确认你在哪）
+
+**仓库根 = `D:\agent开发\菲美得\agent`。** 所有相对路径（`pulse/…`、`pyproject.toml`、
+`RAG知识库/…`）都以它为基准，命令的工作目录也必须是它。
+
+| 位置 | 内容 | 入库 |
+| --- | --- | --- |
+| `agent/` | 代码、契约、治理文档、CI（仓库根） | 是 |
+| `agent/RAG知识库/` | 素材描述索引，内容域选素材用 | 否 |
+| `agent/.venv/` | 唯一可用的 Python 解释器 | 否 |
+| `..\菲美得产品图片\` | 实拍素材（336 个文件），产品图唯一来源 | 否（仓库外） |
+| `..\外贸公司\` | 客群调研与业务资料 | 否（仓库外） |
+
+引用素材时基准是**工作区**（`..\菲美得产品图片\…`），不是仓库根。
+
 ### 5.1 Python 解释器
 
 系统的 `python` / `python3` 是 **Windows Store 占位符，不可用**（执行会报"系统无法访问此文件"）。
@@ -130,16 +145,16 @@ spawn 时使用固定任务名，便于 root 定位与升级：
 **唯一可用的解释器**（已装好 pytest / pytest-asyncio / pydantic / celery / redis / httpx）：
 
 ```
-D:\agent开发\菲美得\.venv\Scripts\python.exe
+D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 ```
 
 ### 5.2 运行测试
 
-**工作目录必须是仓库根** `D:\agent开发\菲美得`（`pyproject.toml` 在此，`pythonpath = ["."]`）：
+**工作目录必须是仓库根** `D:\agent开发\菲美得\agent`（`pyproject.toml` 在此，`pythonpath = ["."]`）：
 
 ```powershell
 $env:PYTHONIOENCODING = 'utf-8'      # 避免中文输出乱码
-& "D:\agent开发\菲美得\.venv\Scripts\python.exe" -m pytest -p no:cacheprovider
+& "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe" -m pytest -p no:cacheprovider
 ```
 
 导入路径为 `pulse.services.<domain>` / `pulse.shared.*`，与 §6 命名规范一致。
@@ -152,7 +167,7 @@ $env:PYTHONIOENCODING = 'utf-8'      # 避免中文输出乱码
 
 ```powershell
 $env:UV_CACHE_DIR = Join-Path $env:TEMP 'uv-cache'   # 沙箱下默认缓存目录不可写，必须改
-uv pip install --python "D:\agent开发\菲美得\.venv\Scripts\python.exe" <包名>
+uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe" <包名>
 ```
 
 **新增第三方依赖前先消息 root** —— 依赖是共享资源，不能各自添加。
@@ -166,7 +181,7 @@ uv pip install --python "D:\agent开发\菲美得\.venv\Scripts\python.exe" <包
 `PublishResult` 的"受理 ≠ 发布"断言、`ErrorClass` 三分法（可重试 / 不可重试 / 轮询）、ID 前缀与时间前缀单调性、序列化。
 
 ```powershell
-& "D:\agent开发\菲美得\.venv\Scripts\python.exe" -m pytest -p no:cacheprovider pulse/shared/tests
+& "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe" -m pytest -p no:cacheprovider pulse/shared/tests
 ```
 
 若你的改动让这些校验失败，**先怀疑自己的实现，不要改 `pulse/shared/`**（属 root 所有）。

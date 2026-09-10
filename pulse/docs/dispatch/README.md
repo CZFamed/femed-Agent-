@@ -46,9 +46,9 @@
 5. **并发跑测试必须加 `-p no:cacheprovider`。** 三个 agent 同时跑 pytest 会争写同一个 `.pytest_cache`。标准命令：
    ```powershell
    $env:PYTHONIOENCODING = 'utf-8'
-   & "D:\agent开发\菲美得\.venv\Scripts\python.exe" -m pytest -p no:cacheprovider
+   & "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe" -m pytest -p no:cacheprovider
    ```
-   工作目录必须是仓库根。**不要**用系统的 `python` / `python3`（Windows Store 占位符，不可用）。
+   工作目录必须是仓库根 `D:\agent开发\菲美得\agent`。**不要**用系统的 `python` / `python3`（Windows Store 占位符，不可用）。
 6. **不写 `pulse/tests/`。** 那是 A6 的目录。域内单测放 `pulse/services/<你的域>/tests/`。
 7. **不伪造数据。** 产能、公差、材质、检测、客户名一律来自真实来源；缺失就写 `TODO(need-real-data)` 占位。编造比缺失严重得多。
 8. **不调真实外部服务。** 模型调用用固定文案桩，平台调用用 Fake Adapter。W1 阶段不得发起真实网络请求。
