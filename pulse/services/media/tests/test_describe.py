@@ -1,0 +1,152 @@
+"""素材描述自动生成测试：图片信息解析、兜底描述、视觉模型、参数防编造。"""
+
+from __future__ import annotations
+
+import json
+import struct
+from datetime import datetime
+
+import httpx
+import pytest
+
+from pulse.services.media.describe import (
+    SYSTEM_PROMPT,
+    VisionConfig,
+    VisionDescriber,
+    build_describer,
+    find_unverified_claims,
+    heuristic_describe,
+    parse_capture_time,
+    probe_image,
+    vision_config_from_env,
+)
+
+
+def _png(width: int, height: int) -> bytes:
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + struct.pack(">I", 13)
+        + b"IHDR"
+        + struct.pack(">II", width, height)
+        + b"\x08\x02\x00\x00\x00"
+    )
+
+
+def _jpeg(width: int, height: int) -> bytes:
+    sof = b"\xff\xc0" + struct.pack(">H", 17) + b"\x08" + struct.pack(">HH", height, width)
+    return b"\xff\xd8" + b"\xff\xe0" + struct.pack(">H", 4) + b"\x00\x00" + sof + b"\xff\xd9"
+
+
+def test_probe_image_reads_png_and_jpeg_sizes() -> None:
+    png = probe_image(_png(4032, 3024))
+    assert (png.fmt, png.width, png.height) == ("png", 4032, 3024)
+    assert png.orientation == "横向构图"
+    assert png.size_text == "4032×3024 横向构图"
+    jpeg = probe_image(_jpeg(1080, 1920))
+    assert (jpeg.fmt, jpeg.width, jpeg.height) == ("jpeg", 1080, 1920)
+    assert jpeg.orientation == "竖向构图"
+
+
+def test_probe_unknown_format_is_tolerated() -> None:
+    info = probe_image(b"not-an-image")
+    assert info.fmt == "unknown"
+    assert info.size_text == "分辨率未知"
+
+
+def test_parse_capture_time_from_common_names() -> None:
+    assert parse_capture_time("IMG_20250914_091930.jpg") == datetime(2025, 9, 14)
+    assert parse_capture_time("mmexport1654645028396.jpg") is not None
+    assert parse_capture_time("无时间文件名.jpg") is None
+
+
+def test_heuristic_description_uses_only_visible_facts() -> None:
+    description = heuristic_describe(
+        _png(800, 600), file_name="IMG_20250914_091930.png", process="加工件", sub_process="机床件"
+    )
+    assert description.source == "heuristic"
+    assert "加工件-机床件" in description.summary
+    assert "800×600" in description.summary
+    assert "2025-09-14" in description.details
+    assert "加工件" in description.keywords
+    assert description.warnings
+    # 兜底描述不得编造材质 / 公差 / 产能等画面不可见参数
+    assert find_unverified_claims(description.details) == ()
+
+
+def test_find_unverified_claims_flags_specs() -> None:
+    text = "可见 HT300 材质，单重 2.5 吨，公差 ±0.05mm，月产能 300 件。"
+    hits = find_unverified_claims(text)
+    assert any("HT300" in item for item in hits)
+    assert any("吨" in item for item in hits)
+    assert any("公差" in item for item in hits)
+    assert any("月产" in item for item in hits)
+
+
+def test_vision_describer_parses_json_and_warns_on_specs() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "summary": "多件灰色机床床身铸件整齐堆放",
+                                    "details": "画面为户外场地堆放的大型铸件，表面喷灰色底漆，材质 HT300。",
+                                    "keywords": ["机床床身", "灰色底漆"],
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    describer = VisionDescriber(VisionConfig(api_key="k", model="vision-test"), client=client)
+    description = describer.describe(
+        _png(800, 600), file_name="IMG_1.png", process="铸件", sub_process="机床件"
+    )
+    assert description.source == "vision"
+    assert description.keywords == ("机床床身", "灰色底漆")
+    assert any("HT300" in item for item in description.warnings)
+    payload = captured["payload"]
+    assert payload["model"] == "vision-test"
+    assert payload["messages"][0]["content"] == SYSTEM_PROMPT
+    image_url = payload["messages"][1]["content"][1]["image_url"]["url"]
+    assert image_url.startswith("data:image/png;base64,")
+
+
+def test_vision_describer_rejects_empty_output() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": json.dumps({"summary": "", "details": ""})}}]}
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    describer = VisionDescriber(VisionConfig(api_key="k"), client=client)
+    with pytest.raises(ValueError):
+        describer.describe(b"x", file_name="a.png", process="铸件", sub_process="阀体")
+
+
+def test_vision_config_reads_env_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("PULSE_VISION_API_KEY", raising=False)
+    (tmp_path / ".env").write_text(
+        "PULSE_VISION_API_KEY=from-file\nPULSE_VISION_MODEL=my-model\n", encoding="utf-8"
+    )
+    config = vision_config_from_env(tmp_path)
+    assert config.enabled is True
+    assert config.api_key == "from-file"
+    assert config.model == "my-model"
+
+
+def test_build_describer_falls_back_without_key(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("PULSE_VISION_API_KEY", raising=False)
+    describe = build_describer(tmp_path)
+    description = describe(b"x", file_name="a.jpg", process="铸件", sub_process="阀体")
+    assert description.source == "heuristic"

@@ -10,14 +10,48 @@ import pytest
 
 from pulse.console.media_console import MediaConsoleApp, create_server, parse_multipart
 from pulse.services.media.config import RecallConfig
+from pulse.services.media.describe import Description
 
 
-def make_app(tmp_path, *, threshold: int = 112) -> MediaConsoleApp:
+class StubDescriber:
+    """固定输出的描述器：测试不依赖网络与 .env。"""
+
+    def __init__(
+        self,
+        *,
+        summary: str = "多件阀体铸件整齐堆放",
+        details: str = "画面可见多件灰色阀体铸件，表面喷防锈底漆。",
+        keywords: tuple[str, ...] = ("阀体", "铸件"),
+        source: str = "vision",
+        warnings: tuple[str, ...] = (),
+    ) -> None:
+        self.summary = summary
+        self.details = details
+        self.keywords = keywords
+        self.source = source
+        self.warnings = warnings
+        self.calls: list[dict] = []
+
+    def __call__(self, data: bytes, *, file_name: str, process: str, sub_process: str) -> Description:
+        self.calls.append(
+            {"file_name": file_name, "process": process, "sub_process": sub_process, "size": len(data)}
+        )
+        return Description(
+            summary=self.summary,
+            details=self.details,
+            keywords=self.keywords,
+            source=self.source,
+            warnings=self.warnings,
+        )
+
+
+def make_app(tmp_path, *, threshold: int = 112, describer=None) -> MediaConsoleApp:
     return MediaConsoleApp(
         rag_root=tmp_path / "RAG知识库" / "图片描述",
         media_root=tmp_path / "菲美得产品图片",
         ledger_path=tmp_path / "ledger.sqlite3",
         config=RecallConfig(capacity_red_threshold=threshold),
+        describer=describer,
     )
 
 
@@ -71,6 +105,57 @@ def test_upload_then_recall_then_mark_used(tmp_path) -> None:
     assert state["assets"][0]["status"] == "cooling"
     assert state["assets"][0]["cooldown_days_left"] == 15
     assert app.recall(query="机床 床身")["picks"] == []
+
+
+def test_describe_generates_fields_without_user_input(tmp_path) -> None:
+    describer = StubDescriber()
+    app = make_app(tmp_path, describer=describer)
+    result = app.describe(file_name="a.jpg", data=b"\xff\xd8data", process="铸件", sub_process="阀体")
+    assert result["ok"] is True
+    assert result["source"] == "vision"
+    assert result["summary"] == describer.summary
+    assert result["keywords"] == ["阀体", "铸件"]
+    assert describer.calls[0]["process"] == "铸件"
+
+
+def test_upload_without_description_falls_back_to_auto(tmp_path) -> None:
+    describer = StubDescriber(summary="自动生成的摘要")
+    app = make_app(tmp_path, threshold=1, describer=describer)
+    result = app.upload(
+        file_name="IMG_AUTO.jpg", data=b"\xff\xd8\xff\xe0auto", process="铸件", sub_process="阀体"
+    )
+    assert result["description_source"] == "vision"
+    assert describer.calls, "未提供描述时应调用自动生成"
+    description_file = tmp_path / "RAG知识库" / "图片描述" / "铸件" / "阀体" / "IMG_AUTO.md"
+    text = description_file.read_text(encoding="utf-8")
+    assert "自动生成的摘要" in text
+    assert '"阀体", "铸件"' in text
+
+
+def test_upload_keeps_manual_description_when_given(tmp_path) -> None:
+    describer = StubDescriber()
+    app = make_app(tmp_path, describer=describer)
+    result = app.upload(
+        file_name="IMG_MANUAL.jpg",
+        data=b"\xff\xd8\xff\xe0manual",
+        process="铸件",
+        sub_process="阀体",
+        summary="人工写的摘要",
+        keywords=("人工",),
+    )
+    assert result["description_source"] == "manual"
+    assert describer.calls == []
+
+
+def test_describe_survives_describer_failure(tmp_path) -> None:
+    def broken(data, *, file_name, process, sub_process):
+        raise RuntimeError("模型超时")
+
+    app = make_app(tmp_path, describer=broken)
+    result = app.describe(file_name="a.jpg", data=b"\xff\xd8x", process="铸件", sub_process="阀体")
+    assert result["ok"] is True
+    assert result["source"] == "heuristic"
+    assert any("视觉模型调用失败" in item for item in result["warnings"])
 
 
 @pytest.fixture()
@@ -134,6 +219,19 @@ def test_http_routes(live_server) -> None:
     state = json.loads(conn.getresponse().read().decode("utf-8"))
     assert state["capacity"]["available"] == 1
     asset_id = state["assets"][0]["asset_id"]
+
+    conn.request(
+        "POST",
+        "/api/describe",
+        body=_multipart_body(
+            boundary, {"process": "铸件", "sub_process": "阀体"}, "IMG_DESC.jpg", b"\xff\xd8\xff\xe0d"
+        ),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    described = json.loads(conn.getresponse().read().decode("utf-8"))
+    assert described["ok"] is True
+    assert described["summary"]
+    assert described["source"] in {"vision", "heuristic"}
 
     conn.request(
         "POST",

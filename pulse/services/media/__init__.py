@@ -17,6 +17,15 @@ from pulse.services.media.config import (
     COOLDOWN_DAYS,
     RecallConfig,
 )
+from pulse.services.media.describe import (
+    Description,
+    VisionConfig,
+    build_describer,
+    find_unverified_claims,
+    heuristic_describe,
+    parse_capture_time,
+    probe_image,
+)
 from pulse.services.media.ingest import MediaIngestor, UnsupportedMediaError
 from pulse.services.media.ledger import RecallLedger
 from pulse.services.media.policy import CapacityReport, RecallPick, RecallPolicy
@@ -27,6 +36,7 @@ __all__ = [
     "CAPACITY_RED_THRESHOLD",
     "COOLDOWN_DAYS",
     "CapacityReport",
+    "Description",
     "MediaAsset",
     "MediaIngestor",
     "MediaRegistry",
@@ -35,6 +45,12 @@ __all__ = [
     "RecallPick",
     "RecallPolicy",
     "UnsupportedMediaError",
+    "VisionConfig",
     "asset_id_for",
+    "build_describer",
+    "find_unverified_claims",
+    "heuristic_describe",
     "load_catalog",
+    "parse_capture_time",
+    "probe_image",
 ]

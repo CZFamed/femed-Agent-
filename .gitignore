@@ -13,6 +13,7 @@ htmlcov/
 # ---- 环境与密钥 ----
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 # 凭据绝不入库（契约：Token 加密存储、永不落日志）

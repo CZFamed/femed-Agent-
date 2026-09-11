@@ -38,6 +38,7 @@ class ConsolePaths:
     rag_root: Path
     media_root: Path
     ledger_path: Path
+    root: Path | None = None
     missing: tuple[str, ...] = ()
 
     @property
@@ -62,7 +63,9 @@ def resolve_paths(
         for label, path in (("RAG 图片描述库（RAG知识库/图片描述）", rag), ("实拍素材目录（../菲美得产品图片）", media))
         if not path.is_dir()
     )
-    return ConsolePaths(rag_root=rag, media_root=media, ledger_path=ledger, missing=missing)
+    return ConsolePaths(
+        rag_root=rag, media_root=media, ledger_path=ledger, root=base, missing=missing
+    )
 
 
 def pick_port(preferred: int = DEFAULT_PORT, host: str = DEFAULT_HOST) -> int:
@@ -87,6 +90,7 @@ def build_app(paths: ConsolePaths) -> MediaConsoleApp:
         rag_root=paths.rag_root,
         media_root=paths.media_root,
         ledger_path=paths.ledger_path,
+        env_root=paths.root,
     )
 
 

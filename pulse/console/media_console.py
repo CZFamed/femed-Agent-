@@ -5,6 +5,7 @@
 - ``GET  /``             素材库页面（上传、容量预警、冷却状态）
 - ``GET  /api/state``    素材清单 + 容量报告
 - ``POST /api/assets``   上传实拍图入库（multipart/form-data）
+- ``POST /api/describe`` 选图后自动生成描述（摘要 / 细节 / 关键词）
 - ``POST /api/usage``    标记素材已进入内容 / 发布（触发 15 天冷却）
 - ``POST /api/recall``   按策略召回候选（新图优先 + 冷却过滤 + 加权随机）
 """
@@ -12,6 +13,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,6 +22,7 @@ from urllib.parse import urlparse
 
 from pulse.services.media.catalog import MediaAsset, load_catalog
 from pulse.services.media.config import BRAND_NAME, RecallConfig
+from pulse.services.media.describe import build_describer, heuristic_describe
 from pulse.services.media.ingest import (
     DuplicateMediaError,
     MediaIngestor,
@@ -72,10 +75,13 @@ PAGE_HTML = (
     "<div><label>图片文件</label><input type='file' name='file' accept='image/*' required/></div>"
     "<div><label>品类 process</label><input name='process' value='加工件' required/></div>"
     "<div><label>子类 sub_process</label><input name='sub_process' value='机床件' required/></div>"
-    "<div><label>关键词（逗号分隔）</label><input name='keywords' placeholder='机床床身, 灰口铸铁'/></div>"
-    "<div><label>一句话摘要</label><input name='summary' placeholder='大型机床床身批量堆放'/></div>"
-    "<div><label>细节说明</label><textarea name='details' rows='2'></textarea></div>"
-    "<div><button type='submit'>上传并入库</button></div></form>"
+    "<div><button type='submit'>上传并入库</button></div>"
+    "<div id='describe-box' style='display:none;grid-column:1/-1'>"
+    "<label>自动生成的摘要（可直接修改）</label><input name='summary'/>"
+    "<label>自动生成的关键词（逗号分隔，可直接修改）</label><input name='keywords'/>"
+    "<label>自动生成的细节说明（可直接修改）</label><textarea name='details' rows='4'></textarea>"
+    "</div></form>"
+    "<p class='muted' id='describe-status'>选择图片后会自动识别并生成描述，不需要手填。</p>"
     "<p class='muted' id='upload-msg'></p></section>"
     "<section><h2>模拟召回</h2><form id='recall'>"
     "<div><label>查询词</label><input name='query' placeholder='机床 床身'/></div>"
@@ -108,6 +114,29 @@ PAGE_HTML = (
     "fetch('/api/assets',{method:'POST',body:new FormData(e.target)}).then(function(r){return r.json();})"
     ".then(function(d){document.getElementById('upload-msg').textContent="
     "d.ok?('已入库：'+d.file_name+'（'+d.asset_id+'）'):('失败：'+d.error);if(d.ok){refresh();}});});"
+    "function describeFile(){var f=document.getElementById('upload');"
+    "var file=f.querySelector('input[name=file]').files[0];if(!file){return;}"
+    "var fd=new FormData();fd.append('file',file);"
+    "fd.append('process',f.querySelector('input[name=process]').value);"
+    "fd.append('sub_process',f.querySelector('input[name=sub_process]').value);"
+    "document.getElementById('describe-status').textContent='正在识别图片并生成描述，请稍等…';"
+    "fetch('/api/describe',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(d){"
+    "if(!d.ok){document.getElementById('describe-status').textContent='自动生成失败：'+d.error;return;}"
+    "document.getElementById('describe-box').style.display='block';"
+    "f.querySelector('input[name=summary]').value=d.summary||'';"
+    "f.querySelector('input[name=keywords]').value=(d.keywords||[]).join(', ');"
+    "f.querySelector('textarea[name=details]').value=d.details||'';"
+    "var msg=d.source==='vision'?'已用视觉模型自动生成描述':"
+    "'已按文件名与规格信息自动生成（未配置视觉模型，画面内容待补充）';"
+    "if(d.warnings&&d.warnings.length){msg+='。提示：'+d.warnings.join('；');}"
+    "document.getElementById('describe-status').textContent=msg;})"
+    ".catch(function(){document.getElementById('describe-status').textContent='自动生成失败，请重试。';});}"
+    "document.getElementById('upload').querySelector('input[name=file]')"
+    ".addEventListener('change',describeFile);"
+    "document.getElementById('upload').querySelector('input[name=process]')"
+    ".addEventListener('change',describeFile);"
+    "document.getElementById('upload').querySelector('input[name=sub_process]')"
+    ".addEventListener('change',describeFile);"
     "document.getElementById('recall').addEventListener('submit',function(e){e.preventDefault();"
     "var f=new FormData(e.target);"
     "fetch('/api/recall',{method:'POST',headers:{'Content-Type':'application/json'},"
@@ -133,6 +162,8 @@ class MediaConsoleApp:
         ledger_path: str | Path,
         registry_path: str | Path | None = None,
         config: RecallConfig | None = None,
+        describer: Any | None = None,
+        env_root: str | Path | None = None,
     ) -> None:
         self.config = config or RecallConfig()
         self.rag_root = Path(rag_root)
@@ -140,6 +171,8 @@ class MediaConsoleApp:
         self.registry = MediaRegistry(registry_path or self.rag_root / DEFAULT_REGISTRY_NAME)
         self.ledger = RecallLedger(ledger_path)
         self.policy = RecallPolicy(self.ledger, self.config)
+        # 描述器：优先视觉模型；未配置或调用失败时退回基础信息描述
+        self.describer = describer or build_describer(Path(env_root) if env_root else None)
         self.ingestor = MediaIngestor(
             rag_root=self.rag_root,
             media_root=self.media_root,
@@ -212,7 +245,15 @@ class MediaConsoleApp:
         summary: str = "",
         details: str = "",
     ) -> dict[str, Any]:
-        """上传一张实拍图并入库。"""
+        """上传一张实拍图并入库；未提供描述时自动生成。"""
+        generated: dict[str, Any] | None = None
+        if not (summary.strip() or details.strip() or keywords):
+            generated = self.describe(
+                file_name=file_name, data=data, process=process, sub_process=sub_process
+            )
+            summary = str(generated.get("summary") or "")
+            details = str(generated.get("details") or "")
+            keywords = tuple(generated.get("keywords") or ())
         asset = self.ingestor.add_image(
             file_name=file_name,
             process=process,
@@ -227,6 +268,35 @@ class MediaConsoleApp:
             "asset_id": asset.asset_id,
             "file_name": asset.file_name,
             "category": asset.category,
+            "description_source": generated.get("source") if generated else "manual",
+            "warnings": list(generated.get("warnings") or []) if generated else [],
+        }
+
+    def describe(
+        self, *, file_name: str, data: bytes, process: str, sub_process: str
+    ) -> dict[str, Any]:
+        """自动生成素材描述：视觉模型优先，未配置或失败时退回基础信息。"""
+        try:
+            description = self.describer(
+                data, file_name=file_name, process=process, sub_process=sub_process
+            )
+        except Exception as exc:  # 网络 / 额度 / 解析失败都不应阻断入库
+            description = replace(
+                heuristic_describe(
+                    data, file_name=file_name, process=process, sub_process=sub_process
+                ),
+                warnings=(
+                    f"视觉模型调用失败，已退回基础信息描述：{exc}",
+                    "画面内容待人工补充。",
+                ),
+            )
+        return {
+            "ok": True,
+            "summary": description.summary,
+            "details": description.details,
+            "keywords": list(description.keywords),
+            "source": description.source,
+            "warnings": list(description.warnings),
         }
 
     def mark_used(self, *, asset_id: str, content_id: str | None = None) -> dict[str, Any]:
@@ -333,6 +403,8 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/assets":
                 self._handle_upload(body)
+            elif path == "/api/describe":
+                self._handle_describe(body)
             elif path == "/api/usage":
                 payload = json.loads(body or b"{}")
                 self._send_json(
@@ -357,7 +429,8 @@ class _Handler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as exc:
             self._send_json({"ok": False, "error": f"请求不合法：{exc}"}, status=400)
 
-    def _handle_upload(self, body: bytes) -> None:
+    def _parse_upload(self, body: bytes) -> tuple[dict[str, str], str, bytes]:
+        """解析 multipart 上传，返回 (表单字段, 文件名, 文件内容)。"""
         content_type = self.headers.get("Content-Type", "")
         if "multipart/form-data" not in content_type or "boundary=" not in content_type:
             raise ValueError("需要 multipart/form-data 上传")
@@ -366,6 +439,11 @@ class _Handler(BaseHTTPRequestHandler):
         if "file" not in files:
             raise ValueError("缺少 file 字段")
         file_name, data = files["file"]
+        return fields, file_name, data
+
+    def _handle_upload(self, body: bytes) -> None:
+        """入库：表单里带描述就用表单的，空着则由应用层自动生成。"""
+        fields, file_name, data = self._parse_upload(body)
         keywords = tuple(
             item.strip() for item in (fields.get("keywords") or "").split(",") if item.strip()
         )
@@ -378,6 +456,18 @@ class _Handler(BaseHTTPRequestHandler):
                 keywords=keywords,
                 summary=fields.get("summary", "").strip(),
                 details=fields.get("details", "").strip(),
+            )
+        )
+
+    def _handle_describe(self, body: bytes) -> None:
+        """选图后自动生成描述（不入库）。"""
+        fields, file_name, data = self._parse_upload(body)
+        self._send_json(
+            self.app.describe(
+                file_name=file_name,
+                data=data,
+                process=fields.get("process", "").strip() or "未分类",
+                sub_process=fields.get("sub_process", "").strip() or "未分类",
             )
         )
 
