@@ -28,6 +28,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 from pulse.services.media.catalog import MediaAsset, load_catalog
+from pulse.services.media.categories import (
+    CategoryCatalog,
+    load_categories,
+    resolve_category,
+)
 from pulse.services.media.config import (
     BRAND_NAME,
     REQUIRE_VISION_BEFORE_INGEST,
@@ -60,10 +65,22 @@ PAGE_HTML = (
     ".card b{display:block;font-size:24px;margin-top:4px}"
     "section{background:#fff;border:1px solid #dcdfe4;border-radius:8px;padding:18px;margin-bottom:20px}"
     "h2{font-size:16px;margin:0 0 12px}"
-    "form{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}"
-    "label{font-size:13px;color:#444;display:block;margin-bottom:4px}"
-    "input,textarea{width:100%;padding:7px 9px;border:1px solid #c9ced6;border-radius:5px;font:inherit}"
+    # 上传表单用四列固定网格：原来用 auto-fit，列数不确定，列宽忽宽忽窄、
+    # 标签基线也对不齐。改成确定性布局后各列标签同高、输入框同高。
+    ".row{display:grid;gap:14px;align-items:end;"
+    "grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr) auto}"
+    ".field{display:flex;flex-direction:column;gap:6px;min-width:0}"
+    "label{font-size:13px;color:#444;display:block;line-height:20px}"
+    ".row .field label{height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+    "input,select{width:100%;height:36px;padding:0 9px;border:1px solid #c9ced6;"
+    "border-radius:5px;font:inherit;box-sizing:border-box;background:#fff}"
+    "input[type=file]{padding:6px 9px}"
+    "textarea{width:100%;padding:8px 9px;border:1px solid #c9ced6;border-radius:5px;"
+    "font:inherit;box-sizing:border-box;resize:vertical}"
+    ".stack{display:grid;gap:12px;margin-top:14px}"
+    "@media (max-width:820px){.row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}"
     "button{background:#1f4e79;color:#fff;border:0;border-radius:5px;padding:9px 16px;cursor:pointer}"
+    ".row button{height:36px;white-space:nowrap}"
     ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}"
     ".asset{border:1px solid #e1e4e8;border-radius:6px;padding:12px;background:#fcfcfd}"
     ".asset h3{margin:0 0 6px;font-size:14px}"
@@ -93,17 +110,26 @@ PAGE_HTML = (
     "<section><h2>上传实拍图入库</h2>"
     "<p class='muted'>入库许可：图片必须先通过视觉识别。识别没成功，按钮保持灰色，无法入库。</p>"
     "<form id='upload'>"
-    "<div><label>图片文件</label><input type='file' name='file' accept='image/*' required/></div>"
-    "<div><label>品类 process</label><input name='process' value='加工件' required/></div>"
-    "<div><label>子类 sub_process</label><input name='sub_process' value='机床件' required/></div>"
-    "<div><label>入库许可</label>"
+    "<div class='row'>"
+    "<div class='field'><label>图片文件</label>"
+    "<input type='file' name='file' accept='image/*' required/></div>"
+    "<div class='field'><label>品类 process</label>"
+    "<select name='process' id='process-select' required></select></div>"
+    "<div class='field'><label>子类 sub_process</label>"
+    "<select name='sub_process' id='sub-process-select' required></select></div>"
+    "<div class='field'><label>入库许可</label>"
     "<button type='submit' id='upload-btn' disabled>上传并入库</button>"
-    "<div class='hint' id='upload-gate'>请先选择图片，识别成功后按钮才会变亮。</div></div>"
+    "</div></div>"
+    "<div class='hint' id='upload-gate'>请先选择图片，识别成功后按钮才会变亮。</div>"
+    "<div class='hint' id='category-note'></div>"
     "<input type='hidden' name='vision_ticket' id='vision-ticket' value=''/>"
-    "<div id='describe-box' style='display:none;grid-column:1/-1'>"
-    "<label>自动生成的摘要（可直接修改）</label><input name='summary'/>"
-    "<label>自动生成的关键词（逗号分隔，可直接修改）</label><input name='keywords'/>"
-    "<label>自动生成的细节说明（可直接修改）</label><textarea name='details' rows='4'></textarea>"
+    "<div id='describe-box' class='stack' style='display:none'>"
+    "<div class='field'><label>自动生成的摘要（可直接修改）</label>"
+    "<input name='summary'/></div>"
+    "<div class='field'><label>自动生成的关键词（逗号分隔，可直接修改）</label>"
+    "<input name='keywords'/></div>"
+    "<div class='field'><label>自动生成的细节说明（可直接修改）</label>"
+    "<textarea name='details' rows='4'></textarea></div>"
     "</div></form>"
     "<p class='muted' id='describe-status'>选择图片后会自动识别并生成描述，不需要手填。</p>"
     "<p class='muted' id='upload-msg'></p></section>"
@@ -117,6 +143,26 @@ PAGE_HTML = (
     "function esc(v){var d=document.createElement('div');d.textContent=v==null?'':String(v);"
     "return d.innerHTML;}"
     "var visionTicket='';"
+    "var categories=[];"
+    "function optionHtml(value,label,selected){return \"<option value='\"+esc(value)+\"'\""
+    "+((String(value)===String(selected))?\" selected\":'')+\">\"+esc(label)+\"</option>\";}"
+    "function fillProcessOptions(selected){var sel=document.getElementById('process-select');"
+    "if(!sel){return;}var seen=[];"
+    "categories.forEach(function(c){if(seen.indexOf(c.process)<0){seen.push(c.process);}});"
+    "sel.innerHTML=seen.map(function(p){return optionHtml(p,p,selected||seen[0]);}).join('');"
+    "fillSubOptions(sel.value,'');}"
+    "function fillSubOptions(process,selected){var sel=document.getElementById('sub-process-select');"
+    "if(!sel){return;}var subs=categories.filter(function(c){return c.process===process;});"
+    "sel.innerHTML=subs.length?subs.map(function(c){var v=c.sub_process;"
+    "return optionHtml(v,v?(v+'（'+c.count+'）'):'（无子类）',selected);}).join('')"
+    ":optionHtml('','（无子类）','');}"
+    "function applyCategories(list){if(!list||!list.length){return;}"
+    "categories=list;var sel=document.getElementById('process-select');"
+    "if(sel&&!sel.options.length){fillProcessOptions('');}}"
+    "function syncSubOptions(){var p=document.getElementById('process-select');"
+    "if(p){fillSubOptions(p.value,'');}}"
+    "function chosenProcess(){var p=document.getElementById('process-select');return p?p.value:'';}"
+    "function chosenSub(){var s=document.getElementById('sub-process-select');return s?s.value:'';}"
     "function setGate(on,text,bad){var b=document.getElementById('upload-btn');"
     "if(b){b.disabled=!on;}"
     "var g=document.getElementById('upload-gate');"
@@ -128,6 +174,7 @@ PAGE_HTML = (
     "return \"<div class='asset'><h3>\"+esc(a.file_name)+\"</h3><span class='\"+tag+\"'>\"+esc(a.status_label)"
     "+\"</span><p class='muted'>\"+esc(a.category)+\"</p><p>\"+esc(a.summary)+\"</p>\"+(extra||'')+\"</div>\";}"
     "function refresh(){fetch('/api/state').then(function(r){return r.json();}).then(function(d){"
+    "applyCategories(d.categories);"
     "var c=d.capacity;var b=document.getElementById('banner');"
     "b.className='banner '+(c.alert==='red'?'red':'ok');"
     "b.textContent=(c.alert==='red'?('红色预警：可召回容量仅 '+c.available+' 张，低于阈值 '"
@@ -162,8 +209,8 @@ PAGE_HTML = (
     "setGate(false,'请先选择图片，识别成功后按钮才会变亮。',false);return;}"
     "setGate(false,'正在识别图片…识别完成前不能入库。',false);"
     "var fd=new FormData();fd.append('file',file);"
-    "fd.append('process',f.querySelector('input[name=process]').value);"
-    "fd.append('sub_process',f.querySelector('input[name=sub_process]').value);"
+    "fd.append('process',chosenProcess());"
+    "fd.append('sub_process',chosenSub());"
     "document.getElementById('describe-status').textContent='正在识别图片并生成描述，请稍等…';"
     "fetch('/api/describe',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(d){"
     "if(!d.ok){document.getElementById('describe-status').textContent='自动生成失败：'+d.error;"
@@ -176,6 +223,16 @@ PAGE_HTML = (
     "'已按文件名与规格信息自动生成（未配置视觉模型，画面内容待补充）';"
     "if(d.warnings&&d.warnings.length){msg+='。提示：'+d.warnings.join('；');}"
     "document.getElementById('describe-status').textContent=msg;"
+    "if(d.process){var ps=document.getElementById('process-select');"
+    "if(ps&&ps.value!==d.process){ps.value=d.process;}"
+    "fillSubOptions(d.process,d.sub_process||'');}"
+    "var note=document.getElementById('category-note');"
+    "if(note){var how=d.category_source;"
+    "note.textContent=how==='vision'?('品类由图片自动识别：'+d.process+(d.sub_process?('/'+d.sub_process):'')+'（可手动改）')"
+    ":how==='keyword'?('视觉模型没给出品类，按识别出的关键词匹配为：'+d.process+(d.sub_process?('/'+d.sub_process):'')+'，请确认后入库')"
+    ":how==='manual'?('沿用了你已选的品类：'+d.process+(d.sub_process?('/'+d.sub_process):''))"
+    ":('没能判断出品类，请在上方手动选择后再入库。');"
+    "note.className='hint'+(how==='none'?' bad':'');}"
     "if(d.vision_ticket){document.getElementById('vision-ticket').value=d.vision_ticket;"
     "visionTicket=d.vision_ticket;"
     "setGate(true,'视觉识别已完成，可以入库。',false);}"
@@ -186,10 +243,14 @@ PAGE_HTML = (
     "setGate(false,'网络异常，视觉识别未完成，不能入库。',true);});}"
     "document.getElementById('upload').querySelector('input[name=file]')"
     ".addEventListener('change',describeFile);"
-    "document.getElementById('upload').querySelector('input[name=process]')"
-    ".addEventListener('change',describeFile);"
-    "document.getElementById('upload').querySelector('input[name=sub_process]')"
-    ".addEventListener('change',describeFile);"
+    "var processSelect=document.getElementById('process-select');"
+    "if(processSelect){processSelect.addEventListener('change',function(){"
+    "syncSubOptions();var note=document.getElementById('category-note');"
+    "if(note&&!visionTicket){note.textContent='';}});}"
+    "var subSelect=document.getElementById('sub-process-select');"
+    "if(subSelect){subSelect.addEventListener('change',function(){"
+    "var note=document.getElementById('category-note');"
+    "if(note&&!visionTicket){note.textContent='';}});}"
     "document.getElementById('recall').addEventListener('submit',function(e){e.preventDefault();"
     "var f=new FormData(e.target);"
     "fetch('/api/recall',{method:'POST',headers:{'Content-Type':'application/json'},"
@@ -249,7 +310,9 @@ class MediaConsoleApp:
         self.policy = RecallPolicy(self.ledger, self.config)
         # 描述器：优先视觉模型；未配置或调用失败时退回基础信息描述
         root = Path(env_root) if env_root else None
-        self.describer = describer or build_describer(root)
+        #: 可选品类目录：来自 RAG 库现有目录，决定下拉框与模型的可选范围
+        self._catalog: CategoryCatalog = load_categories(self.rag_root)
+        self.describer = describer or build_describer(root, catalog=self._catalog)
         # 入库许可：默认"必须先完成视觉识别"，可用环境变量临时关闭
         self.require_vision = (
             resolve_require_vision(root) if require_vision is None else require_vision
@@ -264,6 +327,15 @@ class MediaConsoleApp:
 
     def assets(self) -> list[MediaAsset]:
         return load_catalog(self.rag_root, self.registry, brand=self.config.brand)
+
+    @property
+    def catalog(self) -> CategoryCatalog:
+        return self._catalog
+
+    def refresh_catalog(self) -> CategoryCatalog:
+        """重新扫描品类目录（入库后调用，让下拉框跟上新目录）。"""
+        self._catalog = load_categories(self.rag_root)
+        return self._catalog
 
     def state(self, *, now: datetime | None = None) -> dict[str, Any]:
         """素材清单 + 容量报告（含每张图的冷却状态）。"""
@@ -313,6 +385,7 @@ class MediaConsoleApp:
                 "threshold": capacity.threshold,
                 "alert": capacity.alert,
             },
+            "categories": self._catalog.as_payload(),
             "assets": items,
         }
 
@@ -357,6 +430,7 @@ class MediaConsoleApp:
             summary=summary,
             details=details,
         )
+        self.refresh_catalog()
         return {
             "ok": True,
             "asset_id": asset.asset_id,
@@ -435,6 +509,24 @@ class MediaConsoleApp:
                 ),
             )
         vision_ok = description.source == "vision"
+        # 品类：模型/描述器给了就用，没给则按识别出的关键词兜底，
+        # 再不行——保留调用方已经选好的品类，最后才留空交给人工。
+        resolved_process = (description.process or "").strip()
+        resolved_sub = (description.sub_process or "").strip()
+        category_source = description.category_source or ""
+        if not resolved_process:
+            resolved_process, resolved_sub, category_source = resolve_category(
+                "",
+                "",
+                text=f"{description.summary} {description.details}",
+                keywords=description.keywords,
+                catalog=self._catalog,
+            )
+        if category_source in ("", "none") and self._catalog.has(process, sub_process):
+            resolved_process, resolved_sub, category_source = process, sub_process, "manual"
+        elif not self._catalog and not resolved_process and process:
+            # 库还是空的（没有任何既有品类）时不设限，采信调用方的选择
+            resolved_process, resolved_sub, category_source = process, sub_process, "manual"
         return {
             "ok": True,
             "summary": description.summary,
@@ -442,6 +534,9 @@ class MediaConsoleApp:
             "keywords": list(description.keywords),
             "source": description.source,
             "warnings": list(description.warnings),
+            "process": resolved_process,
+            "sub_process": resolved_sub,
+            "category_source": category_source,
             "vision_required": self.require_vision,
             "vision_ticket": (
                 self._issue_vision_ticket(

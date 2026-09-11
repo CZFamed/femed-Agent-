@@ -31,12 +31,18 @@ class StubDescriber:
         keywords: tuple[str, ...] = ("阀体", "铸件"),
         source: str = "vision",
         warnings: tuple[str, ...] = (),
+        process: str = "",
+        sub_process: str = "",
+        category_source: str = "",
     ) -> None:
         self.summary = summary
         self.details = details
         self.keywords = keywords
         self.source = source
         self.warnings = warnings
+        self.process = process
+        self.sub_process = sub_process
+        self.category_source = category_source
         self.calls: list[dict] = []
 
     def __call__(self, data: bytes, *, file_name: str, process: str, sub_process: str) -> Description:
@@ -49,13 +55,23 @@ class StubDescriber:
             keywords=self.keywords,
             source=self.source,
             warnings=self.warnings,
+            process=self.process,
+            sub_process=self.sub_process,
+            category_source=self.category_source,
         )
+
+
+def _seed_categories(root) -> None:
+    """预置几种既有品类，模拟真实 RAG 库的目录形态。"""
+    for folder in ("铸件/阀体", "铸件/箱体_支座", "加工件/机床件", "人员"):
+        (root / folder).mkdir(parents=True, exist_ok=True)
 
 
 def make_app(
     tmp_path, *, threshold: int = 112, describer=None, require_vision: bool = False
 ) -> MediaConsoleApp:
     """默认关闭入库校验，便于测试入库/召回等其它路径；门禁本身单独测。"""
+    _seed_categories(tmp_path / "RAG知识库" / "图片描述")
     return MediaConsoleApp(
         rag_root=tmp_path / "RAG知识库" / "图片描述",
         media_root=tmp_path / "菲美得产品图片",
@@ -198,8 +214,9 @@ def test_upload_without_ticket_is_rejected(tmp_path) -> None:
             summary="人工填的摘要",
             keywords=("阀体",),
         )
-    # 被拒绝后不应在磁盘留下任何痕迹
-    assert not (tmp_path / "RAG知识库" / "图片描述" / "铸件" / "阀体").exists()
+    # 被拒绝后不应写进任何描述文件
+    description_dir = tmp_path / "RAG知识库" / "图片描述" / "铸件" / "阀体"
+    assert not list(description_dir.glob("*.md"))
 
 
 def test_upload_with_valid_ticket_succeeds(tmp_path) -> None:
@@ -288,6 +305,81 @@ def test_page_ships_disabled_button_and_gate_script(tmp_path) -> None:
     assert "name='vision_ticket'" in PAGE_HTML
     assert "setGate" in PAGE_HTML
     assert app.require_vision is True
+
+
+# ---------- 品类：由图片决定，而不是写死 ----------
+
+
+def test_page_uses_selects_and_fixed_grid(tmp_path) -> None:
+    """品类/子类改成下拉框；四列布局用固定网格，避免列宽忽宽忽窄。"""
+    assert "id='process-select'" in PAGE_HTML
+    assert "id='sub-process-select'" in PAGE_HTML
+    assert "<select name='process'" in PAGE_HTML
+    assert "grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr) auto" in PAGE_HTML
+    assert "auto-fit" not in PAGE_HTML, "auto-fit 是列宽对不齐的根因"
+    assert ".row .field label{height:20px" in PAGE_HTML, "标签要同高，输入框才会对齐"
+
+
+def test_state_exposes_category_options(tmp_path) -> None:
+    app = make_app(tmp_path)
+    categories = app.state()["categories"]
+    labels = {item["label"] for item in categories}
+    assert {"铸件/阀体", "加工件/机床件", "人员"} <= labels
+    assert all("count" in item for item in categories)
+
+
+def test_describe_returns_category_from_image(tmp_path) -> None:
+    describer = StubDescriber(process="铸件", sub_process="箱体_支座", category_source="vision")
+    app = make_app(tmp_path, describer=describer)
+    result = app.describe(file_name="a.jpg", data=b"\xff\xd8x", process="", sub_process="")
+    assert (result["process"], result["sub_process"]) == ("铸件", "箱体_支座")
+    assert result["category_source"] == "vision"
+
+
+def test_describe_falls_back_to_keyword_category(tmp_path) -> None:
+    """描述器没给出品类时，控制台按关键词兜底，而不是用写死的默认值。"""
+    describer = StubDescriber(
+        summary="车间整齐堆放的多件阀体铸件",
+        details="画面为堆放整齐的灰色阀体铸件。",
+        keywords=("阀体", "铸件"),
+    )
+    app = make_app(tmp_path, describer=describer)
+    result = app.describe(file_name="a.jpg", data=b"\xff\xd8x", process="", sub_process="")
+    assert (result["process"], result["sub_process"]) == ("铸件", "阀体")
+    assert result["category_source"] == "keyword"
+
+
+def test_describe_keeps_manual_choice_when_undecided(tmp_path) -> None:
+    describer = StubDescriber(
+        summary="一只猫", details="画面里只有猫。", keywords=("猫",)
+    )
+    app = make_app(tmp_path, describer=describer)
+    result = app.describe(
+        file_name="a.jpg", data=b"\xff\xd8x", process="加工件", sub_process="机床件"
+    )
+    assert (result["process"], result["sub_process"]) == ("加工件", "机床件")
+    assert result["category_source"] == "manual"
+
+
+def test_upload_into_singleton_category_without_sub_process(tmp_path) -> None:
+    """像"人员"这种没有子目录的品类，也要能入库。"""
+    app = make_app(tmp_path, describer=StubDescriber(process="人员", category_source="vision"))
+    result = app.upload(
+        file_name="IMG_STAFF.jpg",
+        data=b"\xff\xd8payload",
+        process="人员",
+        sub_process="",
+        summary="车间人员合影",
+    )
+    assert result["ok"] is True
+    description = tmp_path / "RAG知识库" / "图片描述" / "人员" / "IMG_STAFF.md"
+    assert description.is_file()
+    text = description.read_text(encoding="utf-8")
+    assert 'sub_process: ""' in text
+    assert "# 人员 图片描述汇总索引" in (
+        tmp_path / "RAG知识库" / "图片描述" / "人员" / "00_汇总索引.md"
+    ).read_text(encoding="utf-8")
+    assert app.state()["capacity"]["available"] == 1
 
 
 @pytest.fixture()

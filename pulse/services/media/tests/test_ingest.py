@@ -70,6 +70,30 @@ def test_unsupported_suffix_is_rejected(tmp_path) -> None:
         )
 
 
+def test_missing_process_is_rejected_but_sub_process_is_optional(tmp_path) -> None:
+    """品类必填；子类可空——库里"人员"这类品类本来就没有子目录。"""
+    ingestor = make_ingestor(tmp_path)
+    with pytest.raises(UnsupportedMediaError):
+        ingestor.add_image(file_name="a.jpg", process="", sub_process="", data=JPEG)
+
+    asset = ingestor.add_image(
+        file_name="IMG_STAFF.jpg",
+        process="人员",
+        sub_process="",
+        data=JPEG,
+        summary="车间人员合影",
+        added_at=NOW,
+    )
+    assert asset.category == "人员"
+    assert (tmp_path / "RAG知识库" / "图片描述" / "人员" / "IMG_STAFF.md").is_file()
+    index = (tmp_path / "RAG知识库" / "图片描述" / "人员" / "00_汇总索引.md").read_text(
+        encoding="utf-8"
+    )
+    # 索引里的品类不能被目录名反推成"图片描述/人员"
+    assert '# 人员 图片描述汇总索引' in index
+    assert 'process: "人员"' in index
+
+
 def test_file_name_is_sanitized(tmp_path) -> None:
     ingestor = make_ingestor(tmp_path)
     asset = ingestor.add_image(

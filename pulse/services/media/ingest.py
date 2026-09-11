@@ -92,8 +92,9 @@ class MediaIngestor:
         suffix = Path(safe_name).suffix.lower()
         if suffix not in ALLOWED_IMAGE_SUFFIXES:
             raise UnsupportedMediaError(f"不支持的图片格式：{suffix or '未知'}")
-        if not process or not sub_process:
-            raise UnsupportedMediaError("必须指定 process 与 sub_process（品类）")
+        # sub_process 可以为空：库里"人员"这类品类本来就没有子目录
+        if not process:
+            raise UnsupportedMediaError("必须指定 process（品类）")
 
         payload = self._read_payload(data, source_path)
         content_hash = hashlib.sha256(payload).hexdigest()
@@ -123,7 +124,7 @@ class MediaIngestor:
             ),
             encoding="utf-8",
         )
-        self.rebuild_index(rag_dir)
+        self.rebuild_index(rag_dir, process=process, sub_process=sub_process)
 
         relative = description_path.relative_to(self.rag_root).as_posix()
         asset_id = asset_id_for(relative)
@@ -196,8 +197,13 @@ class MediaIngestor:
             f"{body}\n"
         )
 
-    def rebuild_index(self, rag_dir: Path) -> Path:
-        """按目录内描述文件重建 ``00_汇总索引.md``。"""
+    def rebuild_index(
+        self, rag_dir: Path, *, process: str | None = None, sub_process: str | None = None
+    ) -> Path:
+        """按目录内描述文件重建 ``00_汇总索引.md``。
+
+        品类显式传入：没有子类的品类（如 ``人员``）用目录名反推会推错。
+        """
         rows: list[tuple[str, str, str]] = []
         images = 0
         videos = 0
@@ -211,20 +217,24 @@ class MediaIngestor:
             else:
                 images += 1
             rows.append((source_file, path.name, _first_line(body)))
-        process = rag_dir.parent.name
-        sub_process = rag_dir.name
+        process = process if process is not None else rag_dir.parent.name
+        sub_process = sub_process if sub_process is not None else rag_dir.name
+        category = f"{process}/{sub_process}" if sub_process else process
+        media_dir = self.media_root.joinpath(process, sub_process) if sub_process else (
+            self.media_root / process
+        )
         lines = [
             "---",
-            f'source_folder: "{self.media_root.joinpath(process, sub_process).as_posix()}"',
+            f'source_folder: "{media_dir.as_posix()}"',
             f'process: "{process}"',
             f'sub_process: "{sub_process}"',
             'content_type: "汇总索引"',
             f"total_files: {len(rows)}",
             "---",
             "",
-            f"# {process}（{sub_process}） 图片描述汇总索引",
+            f"# {category} 图片描述汇总索引",
             "",
-            f"本目录存放“{process}/{sub_process}”下全部 {len(rows)} 个媒体文件的 RAG 文字描述"
+            f"本目录存放“{category}”下全部 {len(rows)} 个媒体文件的 RAG 文字描述"
             f"（图片 {images} 张、视频 {videos} 个）。视频文件的描述以 `<文件名>.mp4.md` 命名。"
             "内容概览如下：",
             "",

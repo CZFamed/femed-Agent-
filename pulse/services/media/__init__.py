@@ -11,6 +11,13 @@
 """
 
 from pulse.services.media.catalog import MediaAsset, asset_id_for, load_catalog
+from pulse.services.media.categories import (
+    Category,
+    CategoryCatalog,
+    load_categories,
+    match_category,
+    resolve_category,
+)
 from pulse.services.media.config import (
     BRAND_NAME,
     CAPACITY_RED_THRESHOLD,
@@ -40,6 +47,8 @@ __all__ = [
     "CAPACITY_RED_THRESHOLD",
     "COOLDOWN_DAYS",
     "CapacityReport",
+    "Category",
+    "CategoryCatalog",
     "Description",
     "MediaAsset",
     "MediaIngestor",
@@ -55,10 +64,13 @@ __all__ = [
     "find_unverified_claims",
     "heuristic_describe",
     "load_catalog",
+    "load_categories",
+    "match_category",
     "parse_capture_time",
     "probe_png",
     "probe_image",
     "probe_vision",
+    "resolve_category",
     "vision_config_from_env",
     "vision_model_supports_images",
 ]

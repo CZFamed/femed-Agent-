@@ -26,6 +26,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from pulse.services.media.categories import (
+    CategoryCatalog,
+    resolve_category,
+)
+
 VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".webm")
 
 SYSTEM_PROMPT = (
@@ -35,6 +40,21 @@ SYSTEM_PROMPT = (
     "只输出 JSON，字段为 summary（一句话摘要，40 字以内）、details（细节说明，120-260 字）、"
     "keywords（3-8 个中文关键词数组）。"
 )
+
+#: 让模型顺带判定品类；具体清单在运行时拼进去
+CATEGORY_PROMPT_SUFFIX = (
+    "\nJSON 里还要有 process 与 sub_process 两个字段，记录该素材的品类。"
+    "**只能从下面这份既有品类清单里选，不要自创**：{catalog}。"
+    "判断依据是画面里实际拍到的东西（工件形态、所处工序、拍摄场景），不是文件名。"
+    "确实判断不了时，两个字段都填空字符串。"
+)
+
+
+def build_system_prompt(catalog: CategoryCatalog | None = None) -> str:
+    """拼出系统提示词；没有品类目录时就是基础提示词。"""
+    if not catalog:
+        return SYSTEM_PROMPT
+    return SYSTEM_PROMPT + CATEGORY_PROMPT_SUFFIX.format(catalog=catalog.prompt_text())
 
 #: 画面不可见、但常被模型"猜"出来的参数类表述
 _CLAIM_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -78,6 +98,9 @@ class Description:
     keywords: tuple[str, ...]
     source: str  # vision | heuristic
     warnings: tuple[str, ...] = field(default=())
+    process: str = ""
+    sub_process: str = ""
+    category_source: str = ""  # vision | keyword | manual | heuristic | none
 
 
 def find_unverified_claims(text: str) -> tuple[str, ...]:
@@ -187,6 +210,9 @@ def heuristic_describe(
         keywords=tuple(dict.fromkeys(keywords)),
         source="heuristic",
         warnings=tuple(warnings),
+        process=process,
+        sub_process=sub_process,
+        category_source="heuristic",
     )
 
 
@@ -344,9 +370,17 @@ def _mime_of(file_name: str) -> str:
 class VisionDescriber:
     """调用多模态模型生成描述（支持 Responses API 与 Chat Completions）。"""
 
-    def __init__(self, config: VisionConfig, *, client: Any | None = None) -> None:
+    def __init__(
+        self,
+        config: VisionConfig,
+        *,
+        client: Any | None = None,
+        catalog: CategoryCatalog | None = None,
+    ) -> None:
         self.config = config
         self._client = client
+        #: 既有品类清单：让模型从库里真实存在的品类中选，而不是自己编
+        self.catalog = catalog or CategoryCatalog()
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         import httpx  # 项目依赖，按需导入避免无网络环境下的额外开销
@@ -378,10 +412,11 @@ class VisionDescriber:
             f"品类：{process}/{sub_process}；源文件：{file_name}。请按系统提示输出 JSON。"
         )
         limit = self.config.max_output_tokens
+        instructions = build_system_prompt(self.catalog)
         if self.config.api_style == "responses":
             payload: dict[str, Any] = {
                 "model": self.config.model,
-                "instructions": SYSTEM_PROMPT,
+                "instructions": instructions,
                 "input": [
                     {
                         "role": "user",
@@ -400,7 +435,7 @@ class VisionDescriber:
             "temperature": 0.2,
             "response_format": {"type": "json_object"},
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": instructions},
                 {
                     "role": "user",
                     "content": [
@@ -455,6 +490,18 @@ class VisionDescriber:
         keywords = tuple(str(item).strip() for item in raw_keywords if str(item).strip())
         if not summary and not details:
             raise ValueError("视觉模型返回内容为空")
+        # 品类：优先采信模型的判断，但必须是既有品类；否则用关键词兜底
+        resolved_process, resolved_sub, category_source = resolve_category(
+            str(parsed.get("process") or ""),
+            str(parsed.get("sub_process") or ""),
+            text=f"{summary} {details}",
+            keywords=keywords,
+            catalog=self.catalog,
+        )
+        if category_source == "none" and self.catalog.has(process, sub_process):
+            # 模型没判断出来：保留调用方（页面下拉框/人工）已经选好的品类
+            resolved_process, resolved_sub, category_source = process, sub_process, "manual"
+
         suspicious = find_unverified_claims(f"{summary} {details}")
         warnings: list[str] = []
         if suspicious:
@@ -462,22 +509,30 @@ class VisionDescriber:
                 "描述里出现数字/规格类表述（" + "、".join(suspicious) + "）："
                 "若来自图中铭牌或标牌则可用，否则请删掉后再入库。"
             )
+        if self.catalog and category_source == "none":
+            warnings.append("没能判断出品类，请在上方手动选择后再入库。")
         return Description(
             summary=summary or details[:40],
             details=details or summary,
             keywords=keywords,
             source="vision",
             warnings=tuple(warnings),
+            process=resolved_process,
+            sub_process=resolved_sub,
+            category_source=category_source,
         )
 
 
 def build_describer(
-    root: Path | None = None, *, client: Any | None = None
+    root: Path | None = None,
+    *,
+    client: Any | None = None,
+    catalog: CategoryCatalog | None = None,
 ) -> Callable[..., Description]:
     """返回可用描述器：优先视觉模型，未配置时退化为基础信息描述。"""
     config = vision_config_from_env(root)
     if config.enabled:
-        return VisionDescriber(config, client=client).describe
+        return VisionDescriber(config, client=client, catalog=catalog).describe
 
     def _fallback(
         data: bytes, *, file_name: str, process: str, sub_process: str

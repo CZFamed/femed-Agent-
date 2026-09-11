@@ -15,6 +15,7 @@ from pulse.services.media.describe import (
     VisionAPIError,
     VisionConfig,
     VisionDescriber,
+    build_system_prompt,
     build_describer,
     find_unverified_claims,
     heuristic_describe,
@@ -25,6 +26,7 @@ from pulse.services.media.describe import (
     vision_config_from_env,
     vision_model_supports_images,
 )
+from pulse.services.media.categories import Category, CategoryCatalog
 
 
 def _png(width: int, height: int) -> bytes:
@@ -355,3 +357,162 @@ def test_vision_config_reads_session_and_token_budget(tmp_path, monkeypatch) -> 
     config = vision_config_from_env(tmp_path)
     assert config.session == "my-session"
     assert config.max_output_tokens == 800
+
+
+# ---------- 品类判定 ----------
+
+
+def _catalog() -> CategoryCatalog:
+    return CategoryCatalog(
+        entries=(
+            Category("铸件", "阀体", 103),
+            Category("铸件", "箱体_支座", 90),
+            Category("加工件", "机床件", 16),
+            Category("人员", "", 6),
+        )
+    )
+
+
+def test_system_prompt_without_catalog_is_unchanged() -> None:
+    assert build_system_prompt(None) == SYSTEM_PROMPT
+    assert build_system_prompt(CategoryCatalog()) == SYSTEM_PROMPT
+
+
+def test_system_prompt_lists_allowed_categories() -> None:
+    prompt = build_system_prompt(_catalog())
+    assert prompt.startswith(SYSTEM_PROMPT)
+    assert "铸件/阀体" in prompt and "人员" in prompt
+    assert "只能从" in prompt, "必须明确要求模型从既有品类里选"
+
+
+def _respond(payload_json: dict) -> httpx.Client:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(payload_json, ensure_ascii=False),
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_vision_category_is_used_when_valid() -> None:
+    client = _respond(
+        {
+            "summary": "灰色阀体铸件堆放",
+            "details": "画面可见多件灰色阀体铸件。",
+            "keywords": ["阀体"],
+            "process": "铸件",
+            "sub_process": "箱体_支座",
+        }
+    )
+    description = VisionDescriber(
+        VisionConfig(api_key="k"), client=client, catalog=_catalog()
+    ).describe(probe_png(), file_name="a.png", process="", sub_process="")
+    assert (description.process, description.sub_process) == ("铸件", "箱体_支座")
+    assert description.category_source == "vision"
+
+
+def test_vision_category_falls_back_to_keywords_when_invalid() -> None:
+    client = _respond(
+        {
+            "summary": "车间里一台机床正在加工工件",
+            "details": "画面为机床加工工件的场景，可见铁屑与工装。",
+            "keywords": ["机床", "加工"],
+            "process": "自创品类",
+            "sub_process": "自创子类",
+        }
+    )
+    description = VisionDescriber(
+        VisionConfig(api_key="k"), client=client, catalog=_catalog()
+    ).describe(probe_png(), file_name="a.png", process="", sub_process="")
+    assert (description.process, description.sub_process) == ("加工件", "机床件")
+    assert description.category_source == "keyword"
+
+
+def test_vision_category_unresolved_warns_and_asks_for_manual_pick() -> None:
+    client = _respond(
+        {
+            "summary": "一只猫趴在键盘上",
+            "details": "画面里只有一只猫，没有工业品。",
+            "keywords": ["猫"],
+            "process": "",
+            "sub_process": "",
+        }
+    )
+    description = VisionDescriber(
+        VisionConfig(api_key="k"), client=client, catalog=_catalog()
+    ).describe(probe_png(), file_name="a.png", process="", sub_process="")
+    assert (description.process, description.sub_process) == ("", "")
+    assert description.category_source == "none"
+    assert any("手动选择" in item for item in description.warnings)
+
+
+def test_hint_category_kept_when_model_cannot_tell() -> None:
+    """模型判断不出来时，保留调用方（页面下拉框）已经选好的品类。"""
+    client = _respond(
+        {
+            "summary": "一只猫趴在键盘上",
+            "details": "画面里只有一只猫，没有工业品。",
+            "keywords": ["猫"],
+            "process": "",
+            "sub_process": "",
+        }
+    )
+    description = VisionDescriber(
+        VisionConfig(api_key="k"), client=client, catalog=_catalog()
+    ).describe(probe_png(), file_name="a.png", process="铸件", sub_process="阀体")
+    assert (description.process, description.sub_process) == ("铸件", "阀体")
+    assert description.category_source == "manual"
+
+
+def test_prompt_asks_for_category_when_catalog_present() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(
+                                    {
+                                        "summary": "x",
+                                        "details": "y",
+                                        "keywords": [],
+                                        "process": "人员",
+                                        "sub_process": "",
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    description = VisionDescriber(
+        VisionConfig(api_key="k"), client=client, catalog=_catalog()
+    ).describe(probe_png(), file_name="a.png", process="", sub_process="")
+    instructions = captured["payload"]["instructions"]
+    assert "铸件/阀体" in instructions and "人员" in instructions
+    # 无子类的品类也要能落库
+    assert (description.process, description.sub_process) == ("人员", "")
