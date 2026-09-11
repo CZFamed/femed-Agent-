@@ -22,6 +22,14 @@ FRESHNESS_WINDOW_DAYS = 7
 #: 新图权重倍数（老图权重为 1.0）
 FRESHNESS_BOOST = 2.0
 
+#: 入库许可：必须先完成视觉识别（生成 source=vision 的描述）才允许入库。
+#: 视觉模型不可用时会让控制台无法入库——这是刻意的取舍：宁可挡住，也不让
+#: 未经识别的素材混进 RAG。应急可用 PULSE_MEDIA_REQUIRE_VISION=0 临时关闭。
+REQUIRE_VISION_BEFORE_INGEST = True
+
+#: 视觉识别凭据（入库许可令牌）的有效期（秒）
+VISION_TICKET_TTL_SECONDS = 3600
+
 #: 单次召回的默认返回条数
 DEFAULT_TOP_K = 3
 

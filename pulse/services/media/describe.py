@@ -148,7 +148,8 @@ def parse_capture_time(file_name: str) -> datetime | None:
     return None
 
 
-def _read_env_file(path: Path) -> dict[str, str]:
+def read_env_file(path: Path) -> dict[str, str]:
+    """读取 ``.env`` 形式的键值对（``KEY=VALUE``，支持 ``#`` 注释）。"""
     values: dict[str, str] = {}
     if not path.is_file():
         return values
@@ -302,7 +303,7 @@ def vision_model_supports_images(model: str) -> bool:
 
 def vision_config_from_env(root: Path | None = None) -> VisionConfig:
     """从环境变量（或仓库根 .env）读取视觉模型配置。"""
-    file_values = _read_env_file((root or Path.cwd()) / ".env")
+    file_values = read_env_file((root or Path.cwd()) / ".env")
 
     def pick(name: str, default: str) -> str:
         return os.environ.get(name) or file_values.get(name) or default

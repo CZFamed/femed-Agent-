@@ -4,15 +4,22 @@
 
 - ``GET  /``             素材库页面（上传、容量预警、冷却状态）
 - ``GET  /api/state``    素材清单 + 容量报告
-- ``POST /api/assets``   上传实拍图入库（multipart/form-data）
-- ``POST /api/describe`` 选图后自动生成描述（摘要 / 细节 / 关键词）
+- ``POST /api/assets``   上传实拍图入库（multipart/form-data，需视觉识别凭据）
+- ``POST /api/describe`` 选图后自动生成描述（摘要 / 细节 / 关键词），
+  识别成功时同时签发"入库许可"凭据
 - ``POST /api/usage``    标记素材已进入内容 / 发布（触发 15 天冷却）
 - ``POST /api/recall``   按策略召回候选（新图优先 + 冷却过滤 + 加权随机）
+
+**入库许可（2026-09-11 新增）**：只有完成视觉识别的图片才允许入库。控制台上按钮在
+识别成功前是灰色不可点的；服务端同样校验凭据，绕过页面直接调接口也进不来。
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import secrets
 from dataclasses import replace
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,8 +28,13 @@ from typing import Any
 from urllib.parse import urlparse
 
 from pulse.services.media.catalog import MediaAsset, load_catalog
-from pulse.services.media.config import BRAND_NAME, RecallConfig
-from pulse.services.media.describe import build_describer, heuristic_describe
+from pulse.services.media.config import (
+    BRAND_NAME,
+    REQUIRE_VISION_BEFORE_INGEST,
+    VISION_TICKET_TTL_SECONDS,
+    RecallConfig,
+)
+from pulse.services.media.describe import build_describer, heuristic_describe, read_env_file
 from pulse.services.media.ingest import (
     DuplicateMediaError,
     MediaIngestor,
@@ -60,6 +72,11 @@ PAGE_HTML = (
     ".tag.new{background:#e3f2fd;color:#0d47a1}"
     ".tag.cooling{background:#fff4e5;color:#9a5b00}"
     ".muted{color:#6b7280;font-size:12px}"
+    "button[disabled]{background:#c9ced6;color:#f2f3f5;border:1px solid #c9ced6;"
+    "cursor:not-allowed}"
+    ".hint{font-size:12px;color:#9a5b00;margin-top:6px}"
+    ".hint.bad{color:#b3261e}"
+    ".hint.ok{color:#1b5e20}"
     "</style></head><body>"
     "<header><h1>Pulse 素材库控制台</h1>"
     "<p>品牌级素材池：沧州菲美得 ｜ 冷却 15 天 ｜ 新图优先召回 ｜ 容量低于 112 张红色预警</p>"
@@ -67,15 +84,22 @@ PAGE_HTML = (
     "<div id='banner' class='banner ok'>加载中…</div>"
     "<div class='cards' id='cards'></div>"
     "<section><h2>三步上手</h2><p>"
-    "第一步：在「上传实拍图入库」里选好品类，把电脑里的产品实拍图选进来，点“上传并入库”。<br/>"
+    "第一步：在「上传实拍图入库」里选好品类，把电脑里的产品实拍图选进来；页面会自动识别画面内容。<br/>"
+    "识别成功前，「上传并入库」按钮是<span class='muted'>灰色、点不动</span>的；"
+    "识别成功后会变成蓝色，这时才能点。<br/>"
     "第二步：看最上方的横幅——绿色表示素材充足；红色表示可用图片少于 112 张（约一周用量），需要尽快补拍。<br/>"
     "第三步：某张图被内容用掉后，点它卡片上的“标记已用于内容”，这张图 15 天内不会再被选中。"
     "</p></section>"
-    "<section><h2>上传实拍图入库</h2><form id='upload'>"
+    "<section><h2>上传实拍图入库</h2>"
+    "<p class='muted'>入库许可：图片必须先通过视觉识别。识别没成功，按钮保持灰色，无法入库。</p>"
+    "<form id='upload'>"
     "<div><label>图片文件</label><input type='file' name='file' accept='image/*' required/></div>"
     "<div><label>品类 process</label><input name='process' value='加工件' required/></div>"
     "<div><label>子类 sub_process</label><input name='sub_process' value='机床件' required/></div>"
-    "<div><button type='submit'>上传并入库</button></div>"
+    "<div><label>入库许可</label>"
+    "<button type='submit' id='upload-btn' disabled>上传并入库</button>"
+    "<div class='hint' id='upload-gate'>请先选择图片，识别成功后按钮才会变亮。</div></div>"
+    "<input type='hidden' name='vision_ticket' id='vision-ticket' value=''/>"
     "<div id='describe-box' style='display:none;grid-column:1/-1'>"
     "<label>自动生成的摘要（可直接修改）</label><input name='summary'/>"
     "<label>自动生成的关键词（逗号分隔，可直接修改）</label><input name='keywords'/>"
@@ -92,6 +116,14 @@ PAGE_HTML = (
     "</main><script>"
     "function esc(v){var d=document.createElement('div');d.textContent=v==null?'':String(v);"
     "return d.innerHTML;}"
+    "var visionTicket='';"
+    "function setGate(on,text,bad){var b=document.getElementById('upload-btn');"
+    "if(b){b.disabled=!on;}"
+    "var g=document.getElementById('upload-gate');"
+    "if(g){g.className='hint'+(bad?' bad':(on?' ok':''));g.textContent=text;}"
+    "if(!on){visionTicket='';var t=document.getElementById('vision-ticket');"
+    "if(t){t.value='';}}"
+    "}"
     "function assetCard(a,extra){var tag='tag'+(a.status==='new'?' new':(a.status==='cooling'?' cooling':''));"
     "return \"<div class='asset'><h3>\"+esc(a.file_name)+\"</h3><span class='\"+tag+\"'>\"+esc(a.status_label)"
     "+\"</span><p class='muted'>\"+esc(a.category)+\"</p><p>\"+esc(a.summary)+\"</p>\"+(extra||'')+\"</div>\";}"
@@ -111,17 +143,31 @@ PAGE_HTML = (
     "function markUsed(id){fetch('/api/usage',{method:'POST',headers:{'Content-Type':'application/json'},"
     "body:JSON.stringify({asset_id:id})}).then(refresh);}"
     "document.getElementById('upload').addEventListener('submit',function(e){e.preventDefault();"
+    "if(!visionTicket){document.getElementById('upload-msg').textContent="
+    "'请先等识别完成：识别成功后才能入库。';return;}"
     "fetch('/api/assets',{method:'POST',body:new FormData(e.target)}).then(function(r){return r.json();})"
     ".then(function(d){document.getElementById('upload-msg').textContent="
-    "d.ok?('已入库：'+d.file_name+'（'+d.asset_id+'）'):('失败：'+d.error);if(d.ok){refresh();}});});"
+    "d.ok?('已入库：'+d.file_name+'（'+d.asset_id+'）'):('失败：'+d.error);"
+    "if(d.ok){var f=document.getElementById('upload');f.reset();"
+    "document.getElementById('describe-box').style.display='none';"
+    "document.getElementById('vision-ticket').value='';"
+    "document.getElementById('describe-status').textContent="
+    "'选择图片后会自动识别并生成描述，不需要手填。';"
+    "setGate(false,'请先选择图片，识别成功后按钮才会变亮。',false);refresh();}});});"
     "function describeFile(){var f=document.getElementById('upload');"
-    "var file=f.querySelector('input[name=file]').files[0];if(!file){return;}"
+    "var file=f.querySelector('input[name=file]').files[0];"
+    "document.getElementById('vision-ticket').value='';"
+    "document.getElementById('upload-msg').textContent='';"
+    "if(!file){document.getElementById('describe-box').style.display='none';"
+    "setGate(false,'请先选择图片，识别成功后按钮才会变亮。',false);return;}"
+    "setGate(false,'正在识别图片…识别完成前不能入库。',false);"
     "var fd=new FormData();fd.append('file',file);"
     "fd.append('process',f.querySelector('input[name=process]').value);"
     "fd.append('sub_process',f.querySelector('input[name=sub_process]').value);"
     "document.getElementById('describe-status').textContent='正在识别图片并生成描述，请稍等…';"
     "fetch('/api/describe',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(d){"
-    "if(!d.ok){document.getElementById('describe-status').textContent='自动生成失败：'+d.error;return;}"
+    "if(!d.ok){document.getElementById('describe-status').textContent='自动生成失败：'+d.error;"
+    "setGate(false,'视觉识别失败，无法入库。',true);return;}"
     "document.getElementById('describe-box').style.display='block';"
     "f.querySelector('input[name=summary]').value=d.summary||'';"
     "f.querySelector('input[name=keywords]').value=(d.keywords||[]).join(', ');"
@@ -129,8 +175,15 @@ PAGE_HTML = (
     "var msg=d.source==='vision'?'已用视觉模型自动生成描述':"
     "'已按文件名与规格信息自动生成（未配置视觉模型，画面内容待补充）';"
     "if(d.warnings&&d.warnings.length){msg+='。提示：'+d.warnings.join('；');}"
-    "document.getElementById('describe-status').textContent=msg;})"
-    ".catch(function(){document.getElementById('describe-status').textContent='自动生成失败，请重试。';});}"
+    "document.getElementById('describe-status').textContent=msg;"
+    "if(d.vision_ticket){document.getElementById('vision-ticket').value=d.vision_ticket;"
+    "visionTicket=d.vision_ticket;"
+    "setGate(true,'视觉识别已完成，可以入库。',false);}"
+    "else{setGate(false,d.vision_required===false?('视觉识别未完成，但当前已关闭入库校验，可直接入库。'):"
+    "('视觉识别未完成，不能入库。请检查 .env 里的视觉模型配置，然后重新选图。'),"
+    "d.vision_required!==false);}})"
+    ".catch(function(){document.getElementById('describe-status').textContent='自动生成失败，请重试。';"
+    "setGate(false,'网络异常，视觉识别未完成，不能入库。',true);});}"
     "document.getElementById('upload').querySelector('input[name=file]')"
     ".addEventListener('change',describeFile);"
     "document.getElementById('upload').querySelector('input[name=process]')"
@@ -151,6 +204,28 @@ PAGE_HTML = (
 )
 
 
+class VisionRequiredError(ValueError):
+    """入库许可未满足：这张图还没有完成视觉识别。"""
+
+
+#: 把开关写成这些值视为"关闭入库校验"
+_FALSY_WORDS = frozenset({"0", "false", "no", "off", "n", "否"})
+
+
+def resolve_require_vision(root: str | Path | None = None) -> bool:
+    """入库是否强制要求先完成视觉识别。
+
+    默认开启（``config.REQUIRE_VISION_BEFORE_INGEST``）；应急时可在 ``.env`` 或
+    环境变量里设 ``PULSE_MEDIA_REQUIRE_VISION=0`` 关闭。
+    """
+    raw = os.environ.get("PULSE_MEDIA_REQUIRE_VISION")
+    if raw is None and root is not None:
+        raw = read_env_file(Path(root) / ".env").get("PULSE_MEDIA_REQUIRE_VISION")
+    if raw is None or not str(raw).strip():
+        return REQUIRE_VISION_BEFORE_INGEST
+    return str(raw).strip().lower() not in _FALSY_WORDS
+
+
 class MediaConsoleApp:
     """控制台的后端用例层（可脱离 HTTP 单独测试）。"""
 
@@ -164,6 +239,7 @@ class MediaConsoleApp:
         config: RecallConfig | None = None,
         describer: Any | None = None,
         env_root: str | Path | None = None,
+        require_vision: bool | None = None,
     ) -> None:
         self.config = config or RecallConfig()
         self.rag_root = Path(rag_root)
@@ -172,7 +248,13 @@ class MediaConsoleApp:
         self.ledger = RecallLedger(ledger_path)
         self.policy = RecallPolicy(self.ledger, self.config)
         # 描述器：优先视觉模型；未配置或调用失败时退回基础信息描述
-        self.describer = describer or build_describer(Path(env_root) if env_root else None)
+        root = Path(env_root) if env_root else None
+        self.describer = describer or build_describer(root)
+        # 入库许可：默认"必须先完成视觉识别"，可用环境变量临时关闭
+        self.require_vision = (
+            resolve_require_vision(root) if require_vision is None else require_vision
+        )
+        self._vision_tickets: dict[str, dict[str, Any]] = {}
         self.ingestor = MediaIngestor(
             rag_root=self.rag_root,
             media_root=self.media_root,
@@ -244,16 +326,28 @@ class MediaConsoleApp:
         keywords: tuple[str, ...] = (),
         summary: str = "",
         details: str = "",
+        vision_ticket: str | None = None,
     ) -> dict[str, Any]:
-        """上传一张实拍图并入库；未提供描述时自动生成。"""
+        """上传一张实拍图并入库；未提供描述时自动生成。
+
+        入库许可：默认要求描述来自视觉识别。页面提交的描述必须附带识别凭据，
+        服务端会核对凭据与图片内容哈希是否一致；不附凭据时退回服务端自行识别。
+        """
         generated: dict[str, Any] | None = None
         if not (summary.strip() or details.strip() or keywords):
             generated = self.describe(
                 file_name=file_name, data=data, process=process, sub_process=sub_process
             )
+            if self.require_vision and generated.get("source") != "vision":
+                raise VisionRequiredError(
+                    "视觉识别未完成，无法入库。请检查 .env 里的视觉模型配置后重试；"
+                    "确需应急放行，可设置 PULSE_MEDIA_REQUIRE_VISION=0。"
+                )
             summary = str(generated.get("summary") or "")
             details = str(generated.get("details") or "")
             keywords = tuple(generated.get("keywords") or ())
+        elif self.require_vision:
+            self._assert_vision_ticket(vision_ticket, data, process=process, sub_process=sub_process)
         asset = self.ingestor.add_image(
             file_name=file_name,
             process=process,
@@ -272,10 +366,60 @@ class MediaConsoleApp:
             "warnings": list(generated.get("warnings") or []) if generated else [],
         }
 
+    # ---------- 入库许可 ----------
+    def _content_hash(self, data: bytes) -> str:
+        return hashlib.sha256(data).hexdigest()
+
+    def _issue_vision_ticket(
+        self, *, file_name: str, data: bytes, process: str, sub_process: str
+    ) -> str:
+        """识别成功后签发一次性凭据，供随后的入库请求证明"这张图已识别"。"""
+        self._purge_expired_tickets()
+        token = secrets.token_urlsafe(24)
+        self._vision_tickets[token] = {
+            "content_hash": self._content_hash(data),
+            "file_name": file_name,
+            "process": process,
+            "sub_process": sub_process,
+            "issued_at": datetime.now(timezone.utc),
+        }
+        return token
+
+    def _purge_expired_tickets(self) -> None:
+        now = datetime.now(timezone.utc)
+        expired = [
+            token
+            for token, record in self._vision_tickets.items()
+            if (now - record["issued_at"]).total_seconds() > VISION_TICKET_TTL_SECONDS
+        ]
+        for token in expired:
+            self._vision_tickets.pop(token, None)
+
+    def _assert_vision_ticket(
+        self, ticket: str | None, data: bytes, *, process: str, sub_process: str
+    ) -> None:
+        key = (ticket or "").strip()
+        record = self._vision_tickets.get(key)
+        if record is None:
+            raise VisionRequiredError(
+                "这张图还没有完成视觉识别，不能入库。请等页面识别成功、"
+                "「上传并入库」按钮变亮后再提交。"
+            )
+        if (datetime.now(timezone.utc) - record["issued_at"]).total_seconds() > VISION_TICKET_TTL_SECONDS:
+            self._vision_tickets.pop(key, None)
+            raise VisionRequiredError("识别凭据已过期，请重新选择图片完成识别。")
+        if record["content_hash"] != self._content_hash(data):
+            raise VisionRequiredError(
+                "识别凭据与当前图片不一致（图片内容已变），请重新选择图片完成识别。"
+            )
+
     def describe(
         self, *, file_name: str, data: bytes, process: str, sub_process: str
     ) -> dict[str, Any]:
-        """自动生成素材描述：视觉模型优先，未配置或失败时退回基础信息。"""
+        """自动生成素材描述：视觉模型优先，未配置或失败时退回基础信息。
+
+        只有视觉识别成功（``source == "vision"``）才签发入库许可凭据。
+        """
         try:
             description = self.describer(
                 data, file_name=file_name, process=process, sub_process=sub_process
@@ -290,6 +434,7 @@ class MediaConsoleApp:
                     "画面内容待人工补充。",
                 ),
             )
+        vision_ok = description.source == "vision"
         return {
             "ok": True,
             "summary": description.summary,
@@ -297,6 +442,14 @@ class MediaConsoleApp:
             "keywords": list(description.keywords),
             "source": description.source,
             "warnings": list(description.warnings),
+            "vision_required": self.require_vision,
+            "vision_ticket": (
+                self._issue_vision_ticket(
+                    file_name=file_name, data=data, process=process, sub_process=sub_process
+                )
+                if vision_ok
+                else ""
+            ),
         }
 
     def mark_used(self, *, asset_id: str, content_id: str | None = None) -> dict[str, Any]:
@@ -426,6 +579,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "not found"}, status=404)
         except (UnsupportedMediaError, DuplicateMediaError) as exc:
             self._send_json({"ok": False, "error": str(exc)}, status=400)
+        except VisionRequiredError as exc:
+            self._send_json(
+                {"ok": False, "error": str(exc), "vision_required": True}, status=403
+            )
         except (ValueError, json.JSONDecodeError) as exc:
             self._send_json({"ok": False, "error": f"请求不合法：{exc}"}, status=400)
 
@@ -456,6 +613,7 @@ class _Handler(BaseHTTPRequestHandler):
                 keywords=keywords,
                 summary=fields.get("summary", "").strip(),
                 details=fields.get("details", "").strip(),
+                vision_ticket=fields.get("vision_ticket", "").strip(),
             )
         )
 

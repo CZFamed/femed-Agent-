@@ -233,6 +233,11 @@ def run(
     print("启动成功。")
     print(f"  访问地址：{url}")
     print(f"  可召回图片：{capacity['available']} 张（预警阈值 {capacity['threshold']} 张）")
+    print(
+        "  入库许可：必须先完成视觉识别"
+        if app.require_vision
+        else "  入库许可：已关闭（应急模式，未经识别的图也能入库）"
+    )
     if capacity["alert"] == "red":
         print("  注意：可用图片已低于阈值，页面顶部会显示红色预警，请尽快补拍素材。")
     print("  浏览器会自动打开；用完后关闭本窗口即可退出。")

@@ -8,7 +8,14 @@ import threading
 
 import pytest
 
-from pulse.console.media_console import MediaConsoleApp, create_server, parse_multipart
+from pulse.console.media_console import (
+    PAGE_HTML,
+    MediaConsoleApp,
+    VisionRequiredError,
+    create_server,
+    parse_multipart,
+    resolve_require_vision,
+)
 from pulse.services.media.config import RecallConfig
 from pulse.services.media.describe import Description
 
@@ -45,13 +52,17 @@ class StubDescriber:
         )
 
 
-def make_app(tmp_path, *, threshold: int = 112, describer=None) -> MediaConsoleApp:
+def make_app(
+    tmp_path, *, threshold: int = 112, describer=None, require_vision: bool = False
+) -> MediaConsoleApp:
+    """默认关闭入库校验，便于测试入库/召回等其它路径；门禁本身单独测。"""
     return MediaConsoleApp(
         rag_root=tmp_path / "RAG知识库" / "图片描述",
         media_root=tmp_path / "菲美得产品图片",
         ledger_path=tmp_path / "ledger.sqlite3",
         config=RecallConfig(capacity_red_threshold=threshold),
-        describer=describer,
+        describer=describer or StubDescriber(),
+        require_vision=require_vision,
     )
 
 
@@ -158,9 +169,130 @@ def test_describe_survives_describer_failure(tmp_path) -> None:
     assert any("视觉模型调用失败" in item for item in result["warnings"])
 
 
+# ---------- 入库许可：必须先完成视觉识别 ----------
+
+
+def test_describe_issues_ticket_only_after_vision_success(tmp_path) -> None:
+    app = make_app(tmp_path, require_vision=True, describer=StubDescriber())
+    result = app.describe(file_name="a.jpg", data=b"\xff\xd8data", process="铸件", sub_process="阀体")
+    assert result["vision_required"] is True
+    assert result["vision_ticket"], "视觉识别成功必须签发入库凭据"
+
+    fallback = make_app(
+        tmp_path / "fallback", require_vision=True, describer=StubDescriber(source="heuristic")
+    )
+    missed = fallback.describe(
+        file_name="a.jpg", data=b"\xff\xd8data", process="铸件", sub_process="阀体"
+    )
+    assert missed["vision_ticket"] == "", "退回基础信息描述时不得签发凭据"
+
+
+def test_upload_without_ticket_is_rejected(tmp_path) -> None:
+    app = make_app(tmp_path, require_vision=True)
+    with pytest.raises(VisionRequiredError):
+        app.upload(
+            file_name="IMG_X.jpg",
+            data=b"\xff\xd8payload",
+            process="铸件",
+            sub_process="阀体",
+            summary="人工填的摘要",
+            keywords=("阀体",),
+        )
+    # 被拒绝后不应在磁盘留下任何痕迹
+    assert not (tmp_path / "RAG知识库" / "图片描述" / "铸件" / "阀体").exists()
+
+
+def test_upload_with_valid_ticket_succeeds(tmp_path) -> None:
+    app = make_app(tmp_path, threshold=1, require_vision=True)
+    data = b"\xff\xd8payload"
+    ticket = app.describe(
+        file_name="IMG_OK.jpg", data=data, process="铸件", sub_process="阀体"
+    )["vision_ticket"]
+    result = app.upload(
+        file_name="IMG_OK.jpg",
+        data=data,
+        process="铸件",
+        sub_process="阀体",
+        summary="阀体铸件实拍",
+        keywords=("阀体",),
+        vision_ticket=ticket,
+    )
+    assert result["ok"] is True
+    assert app.state()["capacity"]["available"] == 1
+
+
+def test_ticket_is_bound_to_image_content(tmp_path) -> None:
+    app = make_app(tmp_path, require_vision=True)
+    ticket = app.describe(
+        file_name="IMG_A.jpg", data=b"\xff\xd8first", process="铸件", sub_process="阀体"
+    )["vision_ticket"]
+    with pytest.raises(VisionRequiredError) as excinfo:
+        app.upload(
+            file_name="IMG_B.jpg",
+            data=b"\xff\xd8second",
+            process="铸件",
+            sub_process="阀体",
+            summary="另一张图",
+            vision_ticket=ticket,
+        )
+    assert "不一致" in str(excinfo.value)
+
+
+def test_upload_rejects_unknown_ticket(tmp_path) -> None:
+    app = make_app(tmp_path, require_vision=True)
+    with pytest.raises(VisionRequiredError) as excinfo:
+        app.upload(
+            file_name="IMG_Y.jpg",
+            data=b"\xff\xd8payload",
+            process="铸件",
+            sub_process="阀体",
+            summary="摘要",
+            vision_ticket="伪造的凭据",
+        )
+    assert "还没有完成视觉识别" in str(excinfo.value)
+
+
+def test_upload_without_description_needs_vision_too(tmp_path) -> None:
+    """不填描述时由服务端自己识别——识别不成功同样不许入库。"""
+    app = make_app(tmp_path, require_vision=True, describer=StubDescriber(source="heuristic"))
+    with pytest.raises(VisionRequiredError):
+        app.upload(
+            file_name="IMG_Z.jpg", data=b"\xff\xd8payload", process="铸件", sub_process="阀体"
+        )
+
+
+def test_gate_can_be_disabled_for_emergency(tmp_path) -> None:
+    app = make_app(tmp_path, require_vision=False)
+    result = app.upload(
+        file_name="IMG_FREE.jpg",
+        data=b"\xff\xd8payload",
+        process="铸件",
+        sub_process="阀体",
+        summary="人工摘要",
+    )
+    assert result["ok"] is True
+
+
+def test_resolve_require_vision_reads_env(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("PULSE_MEDIA_REQUIRE_VISION", raising=False)
+    assert resolve_require_vision() is True, "默认必须开启入库校验"
+    (tmp_path / ".env").write_text("PULSE_MEDIA_REQUIRE_VISION=0\n", encoding="utf-8")
+    assert resolve_require_vision(tmp_path) is False
+    (tmp_path / ".env").write_text("PULSE_MEDIA_REQUIRE_VISION=1\n", encoding="utf-8")
+    assert resolve_require_vision(tmp_path) is True
+
+
+def test_page_ships_disabled_button_and_gate_script(tmp_path) -> None:
+    app = make_app(tmp_path, require_vision=True)
+    assert "id='upload-btn' disabled" in PAGE_HTML
+    assert "name='vision_ticket'" in PAGE_HTML
+    assert "setGate" in PAGE_HTML
+    assert app.require_vision is True
+
+
 @pytest.fixture()
 def live_server(tmp_path):
-    app = make_app(tmp_path, threshold=1)
+    app = make_app(tmp_path, threshold=1, require_vision=True)
     server = create_server(app, port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -196,9 +328,13 @@ def test_http_routes(live_server) -> None:
     html = page.read().decode("utf-8")
     assert page.status == 200
     assert "Pulse 素材库控制台" in html
+    # 入库按钮默认必须是灰色不可点的
+    assert "id='upload-btn' disabled" in html
+    assert "button[disabled]" in html
 
     boundary = "----pulseHttp"
-    body = _multipart_body(
+    # 1) 没有识别凭据就入库 → 必须被服务端挡住
+    no_ticket = _multipart_body(
         boundary,
         {"process": "铸件", "sub_process": "阀体", "keywords": "阀体, 铸件", "summary": "阀体实拍"},
         "IMG_HTTP.jpg",
@@ -207,7 +343,51 @@ def test_http_routes(live_server) -> None:
     conn.request(
         "POST",
         "/api/assets",
-        body=body,
+        body=no_ticket,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    upload = conn.getresponse()
+    payload = json.loads(upload.read().decode("utf-8"))
+    assert upload.status == 403
+    assert payload["ok"] is False
+    assert payload["vision_required"] is True
+
+    # 2) 先识别拿凭据
+    conn.request(
+        "POST",
+        "/api/describe",
+        body=_multipart_body(
+            boundary,
+            {"process": "铸件", "sub_process": "阀体"},
+            "IMG_HTTP.jpg",
+            b"\xff\xd8\xff\xe0http",
+        ),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    described = json.loads(conn.getresponse().read().decode("utf-8"))
+    assert described["ok"] is True
+    assert described["summary"]
+    assert described["source"] == "vision"
+    ticket = described["vision_ticket"]
+    assert ticket
+
+    # 3) 带上凭据再入库 → 通过
+    with_ticket = _multipart_body(
+        boundary,
+        {
+            "process": "铸件",
+            "sub_process": "阀体",
+            "keywords": "阀体, 铸件",
+            "summary": "阀体实拍",
+            "vision_ticket": ticket,
+        },
+        "IMG_HTTP.jpg",
+        b"\xff\xd8\xff\xe0http",
+    )
+    conn.request(
+        "POST",
+        "/api/assets",
+        body=with_ticket,
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
     )
     upload = conn.getresponse()
@@ -219,19 +399,6 @@ def test_http_routes(live_server) -> None:
     state = json.loads(conn.getresponse().read().decode("utf-8"))
     assert state["capacity"]["available"] == 1
     asset_id = state["assets"][0]["asset_id"]
-
-    conn.request(
-        "POST",
-        "/api/describe",
-        body=_multipart_body(
-            boundary, {"process": "铸件", "sub_process": "阀体"}, "IMG_DESC.jpg", b"\xff\xd8\xff\xe0d"
-        ),
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-    )
-    described = json.loads(conn.getresponse().read().decode("utf-8"))
-    assert described["ok"] is True
-    assert described["summary"]
-    assert described["source"] in {"vision", "heuristic"}
 
     conn.request(
         "POST",
