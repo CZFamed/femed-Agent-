@@ -231,6 +231,8 @@ class VisionConfig:
     timeout_s: float = 45.0
     session: str = "pulse-media-library"
     max_output_tokens: int = 2000
+    #: 短文比描述长得多，且模型会先"思考"占掉大量输出预算，所以单独放宽
+    caption_max_tokens: int = 8000
 
     @property
     def enabled(self) -> bool:
@@ -323,6 +325,27 @@ def _hint_for(status: int, provider_type: str) -> str:
     return _PROVIDER_HINTS.get(provider_type) or _STATUS_HINTS.get(status, "")
 
 
+def check_response_complete(body: dict[str, Any]) -> None:
+    """Responses API 返回 incomplete 时正文往往是空的，这里把原因说明白。
+
+    实测（2026-09-11）deepseek-v4.1-flash 是推理模型：写一篇 LinkedIn 短文时
+    思考就吃掉 4,000 tokens，把输出预算耗尽、正文一个字都没出。只报
+    "返回内容不是 JSON" 完全没法排查，所以在这里单独拦一道。
+    """
+    if str(body.get("status") or "") != "incomplete":
+        return
+    reason = (body.get("incomplete_details") or {}).get("reason") or "unknown"
+    usage = body.get("usage") or {}
+    reasoning = (usage.get("output_tokens_details") or {}).get("reasoning_tokens")
+    if reason == "max_output_tokens":
+        raise ValueError(
+            f"模型输出被上限截断（共用 {usage.get('output_tokens')} tokens，"
+            f"其中思考 {reasoning} tokens），没能写出正文。"
+            "请调大输出预算或降低思考强度后重试。"
+        )
+    raise ValueError(f"模型返回不完整（原因：{reason}）")
+
+
 def vision_model_supports_images(model: str) -> bool:
     return model.strip() not in TEXT_ONLY_MODELS
 
@@ -344,6 +367,11 @@ def vision_config_from_env(root: Path | None = None) -> VisionConfig:
         max_tokens = int(raw_tokens)
     except ValueError:
         max_tokens = 2000
+    raw_caption_tokens = pick("PULSE_CAPTION_MAX_TOKENS", "8000")
+    try:
+        caption_tokens = int(raw_caption_tokens)
+    except ValueError:
+        caption_tokens = 8000
     return VisionConfig(
         base_url=pick("PULSE_VISION_BASE_URL", "https://opencode.ai/zen/go/v1").rstrip("/"),
         api_key=pick("PULSE_VISION_API_KEY", ""),
@@ -352,6 +380,7 @@ def vision_config_from_env(root: Path | None = None) -> VisionConfig:
         timeout_s=timeout,
         session=pick("PULSE_VISION_SESSION", "pulse-media-library"),
         max_output_tokens=max_tokens,
+        caption_max_tokens=caption_tokens,
     )
 
 
@@ -365,6 +394,38 @@ def _mime_of(file_name: str) -> str:
         ".bmp": "image/bmp",
         ".gif": "image/gif",
     }.get(suffix, "image/jpeg")
+
+
+def post_json(
+    config: VisionConfig, payload: dict[str, Any], *, client: Any | None = None
+) -> dict[str, Any]:
+    """把 payload POST 到配置的端点并返回 JSON；失败统一抛 ``VisionAPIError``。
+
+    视觉识别与短文生成共用这条通道，避免两处各写一份请求与报错逻辑。
+    """
+    import httpx  # 项目依赖，按需导入避免无网络环境下的额外开销
+
+    headers = {
+        "Authorization": f"Bearer {config.api_key}",
+        "Content-Type": "application/json",
+        # OpenCode Go 强制要求：缺这个头会直接返回 400 MissingSessionID
+        "x-opencode-session": config.session or "pulse-media-library",
+    }
+    url = config.endpoint
+    if client is not None:
+        response = client.post(url, headers=headers, json=payload)
+    else:
+        with httpx.Client(timeout=config.timeout_s) as http_client:
+            response = http_client.post(url, headers=headers, json=payload)
+    if response.status_code >= 400:
+        provider_type, provider_message = _provider_error_of(response)
+        raise VisionAPIError(
+            response.status_code,
+            provider_type,
+            provider_message,
+            _hint_for(response.status_code, provider_type),
+        )
+    return response.json()
 
 
 class VisionDescriber:
@@ -383,29 +444,7 @@ class VisionDescriber:
         self.catalog = catalog or CategoryCatalog()
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        import httpx  # 项目依赖，按需导入避免无网络环境下的额外开销
-
-        headers = {
-            "Authorization": f"Bearer {self.config.api_key}",
-            "Content-Type": "application/json",
-            # OpenCode Go 强制要求：缺这个头会直接返回 400 MissingSessionID
-            "x-opencode-session": self.config.session or "pulse-media-library",
-        }
-        url = self.config.endpoint
-        if self._client is not None:
-            response = self._client.post(url, headers=headers, json=payload)
-        else:
-            with httpx.Client(timeout=self.config.timeout_s) as client:
-                response = client.post(url, headers=headers, json=payload)
-        if response.status_code >= 400:
-            provider_type, provider_message = _provider_error_of(response)
-            raise VisionAPIError(
-                response.status_code,
-                provider_type,
-                provider_message,
-                _hint_for(response.status_code, provider_type),
-            )
-        return response.json()
+        return post_json(self.config, payload, client=self._client)
 
     def _build_payload(self, data_url: str, *, file_name: str, process: str, sub_process: str):
         prompt = (
@@ -483,6 +522,7 @@ class VisionDescriber:
             sub_process=sub_process,
         )
         body = self._post(payload)
+        check_response_complete(body)
         parsed = _loads_json_object(self._extract_text(body, self.config.api_style))
         summary = str(parsed.get("summary") or "").strip()
         details = str(parsed.get("details") or "").strip()
@@ -528,11 +568,12 @@ def build_describer(
     *,
     client: Any | None = None,
     catalog: CategoryCatalog | None = None,
+    config: VisionConfig | None = None,
 ) -> Callable[..., Description]:
     """返回可用描述器：优先视觉模型，未配置时退化为基础信息描述。"""
-    config = vision_config_from_env(root)
-    if config.enabled:
-        return VisionDescriber(config, client=client, catalog=catalog).describe
+    resolved = config or vision_config_from_env(root)
+    if resolved.enabled:
+        return VisionDescriber(resolved, client=client, catalog=catalog).describe
 
     def _fallback(
         data: bytes, *, file_name: str, process: str, sub_process: str
@@ -559,7 +600,9 @@ def _loads_json_object(text: str) -> dict[str, Any]:
     if start >= 0 and end > start:
         parsed = json.loads(cleaned[start : end + 1])
         return parsed if isinstance(parsed, dict) else {}
-    raise ValueError("视觉模型返回内容不是 JSON")
+    # 把原文带出来：被 max_output_tokens 截断时，只看"不是 JSON"根本没法排查
+    preview = (cleaned or "")[:200]
+    raise ValueError(f"视觉模型返回内容不是 JSON（可能被输出上限截断）：{preview!r}")
 
 
 def probe_png(width: int = 8, height: int = 8) -> bytes:

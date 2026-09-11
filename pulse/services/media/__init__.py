@@ -11,6 +11,14 @@
 """
 
 from pulse.services.media.catalog import MediaAsset, asset_id_for, load_catalog
+from pulse.services.media.captions import (
+    CAPTION_SPECS,
+    CaptionResult,
+    CaptionSpec,
+    caption_spec,
+    generate_caption,
+    validate_caption,
+)
 from pulse.services.media.categories import (
     Category,
     CategoryCatalog,
@@ -54,7 +62,10 @@ __all__ = [
     "BRAND_NAME",
     "CAPACITY_RED_THRESHOLD",
     "COOLDOWN_DAYS",
+    "CAPTION_SPECS",
     "CapacityReport",
+    "CaptionResult",
+    "CaptionSpec",
     "Category",
     "CategoryCatalog",
     "Description",
@@ -72,7 +83,9 @@ __all__ = [
     "VisionConfig",
     "asset_id_for",
     "build_describer",
+    "caption_spec",
     "find_unverified_claims",
+    "generate_caption",
     "heuristic_describe",
     "load_catalog",
     "load_categories",
@@ -87,4 +100,5 @@ __all__ = [
     "slot_score",
     "vision_config_from_env",
     "vision_model_supports_images",
+    "validate_caption",
 ]

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import http.client
 import json
+import struct
 import threading
 
+import httpx
 import pytest
 
 from pulse.console.media_console import (
@@ -392,6 +394,8 @@ def _write_description(
     file_name: str,
     keywords: tuple[str, ...],
     summary: str,
+    *,
+    source_name: str | None = None,
 ) -> None:
     """写一份与库存格式一致的描述，供召回匹配。"""
     folder = rag_root / process / sub_process
@@ -399,7 +403,7 @@ def _write_description(
     keyword_text = ", ".join(f'"{item}"' for item in keywords)
     (folder / f"{file_name}.md").write_text(
         "---\n"
-        f'source_file: "{file_name}"\n'
+        f'source_file: "{source_name or file_name}"\n'
         f'process: "{process}"\n'
         f'sub_process: "{sub_process}"\n'
         'content_type: "图片描述"\n'
@@ -505,6 +509,185 @@ def test_recall_without_platform_keeps_keyword_behaviour(tmp_path) -> None:
     result = app.recall(query="阀体", top_k=3)
     assert result["platform"] is None
     assert result["slots"] == []
+
+
+# ---------- 预览 ----------
+
+
+def _png_bytes() -> bytes:
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + struct.pack(">I", 13)
+        + b"IHDR"
+        + struct.pack(">II", 4, 4)
+        + b"\x08\x02\x00\x00\x00"
+    )
+
+
+def test_media_path_resolves_despite_stale_source_path(tmp_path) -> None:
+    """描述头部的 source_path 写的是别的机器的绝对路径，不能拿它定位文件。"""
+    app = make_app(tmp_path)
+    rag = app.rag_root
+    _write_description(
+        rag, "铸件", "阀体", "IMG_V.jpg", ("阀体", "灰铁铸件"), "一件阀体铸件"
+    )
+    media_dir = tmp_path / "菲美得产品图片" / "铸件" / "阀体"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    payload = _png_bytes()
+    (media_dir / "IMG_V.jpg").write_bytes(payload)
+
+    asset = next(a for a in app.assets() if a.file_name == "IMG_V.jpg")
+    resolved = app.media_path(asset)
+    assert resolved is not None and resolved.name == "IMG_V.jpg"
+
+
+def test_media_path_returns_none_when_file_missing(tmp_path) -> None:
+    app = make_app(tmp_path)
+    _write_description(app.rag_root, "铸件", "阀体", "GONE.jpg", ("阀体",), "已删除的图")
+    asset = next(a for a in app.assets() if a.file_name == "GONE.jpg")
+    assert app.media_path(asset) is None
+
+
+def test_media_path_rejects_traversal(tmp_path) -> None:
+    """描述头部里的文件名带路径时不得读到库外。"""
+    app = make_app(tmp_path)
+    _write_description(
+        app.rag_root,
+        "铸件",
+        "阀体",
+        "IMG_EVIL",
+        ("阀体",),
+        "越界尝试",
+        source_name="../../../../secret.jpg",
+    )
+    (tmp_path / "secret.jpg").write_bytes(b"top secret")
+    asset = next(a for a in app.assets() if "secret" in a.file_name)
+    assert app.media_path(asset) is None
+
+
+def test_asset_image_endpoint_serves_bytes(live_server) -> None:
+    app, host, port = live_server
+    _write_description(
+        app.rag_root, "铸件", "阀体", "IMG_VIEW.png", ("阀体", "灰铁铸件"), "可预览的阀体"
+    )
+    media_dir = app.media_root / "铸件" / "阀体"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    payload = _png_bytes()
+    (media_dir / "IMG_VIEW.png").write_bytes(payload)
+    asset = next(a for a in app.assets() if a.file_name == "IMG_VIEW.png")
+
+    conn = http.client.HTTPConnection(host, port, timeout=5)
+    conn.request("GET", f"/api/asset-image?asset_id={asset.asset_id}")
+    response = conn.getresponse()
+    assert response.status == 200
+    assert response.getheader("Content-Type") == "image/png"
+    assert response.getheader("Accept-Ranges") == "bytes"
+    assert response.read() == payload
+
+    # Range 请求必须回 206，否则视频无法拖动进度
+    conn.request(
+        "GET",
+        f"/api/asset-image?asset_id={asset.asset_id}",
+        headers={"Range": "bytes=0-7"},
+    )
+    partial = conn.getresponse()
+    assert partial.status == 206
+    assert partial.getheader("Content-Range") == f"bytes 0-7/{len(payload)}"
+    assert partial.read() == payload[:8]
+
+    conn.request("GET", "/api/asset-image?asset_id=img_nope")
+    assert conn.getresponse().status == 404
+    conn.close()
+
+
+# ---------- 短文生成 ----------
+
+
+def _caption_client(text: str, hashtags: list[str], **extra):
+    payload = {"text": text, "hashtags": hashtags, **extra}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(payload, ensure_ascii=False),
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def _caption_app(tmp_path, *, client):
+    _seed_categories(tmp_path / "RAG知识库" / "图片描述")
+    return MediaConsoleApp(
+        rag_root=tmp_path / "RAG知识库" / "图片描述",
+        media_root=tmp_path / "菲美得产品图片",
+        ledger_path=tmp_path / "ledger.sqlite3",
+        config=RecallConfig(capacity_red_threshold=1),
+        describer=StubDescriber(),
+        require_vision=False,
+        caption_client=client,
+        env_root=tmp_path,
+    )
+
+
+def test_state_exposes_caption_specs(tmp_path) -> None:
+    app = make_app(tmp_path)
+    specs = {item["key"]: item for item in app.state()["caption_specs"]}
+    assert set(specs) == {"linkedin", "facebook", "tiktok", "vk"}
+    assert specs["linkedin"]["structure_text"].startswith("钩子行")
+    assert specs["tiktok"]["max_chars"] == 150
+
+
+def test_caption_uses_platform_recall_when_no_ids(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PULSE_VISION_API_KEY", "test-key")
+    text = "Most machine tool builders don't own a foundry. " + "Casting and machining. " * 30
+    app = _caption_app(
+        tmp_path,
+        client=_caption_client(text, ["#casting", "#foundry", "#machinetools"]),
+    )
+    _write_description(
+        app.rag_root, "加工件", "机床件", "IMG_BED.jpg",
+        ("机床床身", "导轨面", "机加工"), "大型机床床身加工",
+    )
+    result = app.caption(platform="linkedin")
+    assert result["ok"] is True
+    assert result["platform_name"] == "LinkedIn"
+    assert result["material_count"] >= 1
+    assert result["hashtags"] == ["#casting", "#foundry", "#machinetools"]
+    assert result["checks"], "必须回传逐条校验结果"
+    assert result["char_count"] == len(text.strip())
+
+
+def test_caption_rejects_platform_without_material(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PULSE_VISION_API_KEY", "test-key")
+    app = _caption_app(tmp_path, client=_caption_client("x", ["#a"]))
+    with pytest.raises(ValueError, match="没有可用素材"):
+        app.caption(platform="tiktok")
+
+
+def test_caption_rejects_unknown_platform(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with pytest.raises(ValueError, match="不支持的平台"):
+        app.caption(platform="weibo")
+
+
+def test_page_ships_preview_and_caption_ui(tmp_path) -> None:
+    assert "/api/asset-image?asset_id=" in PAGE_HTML
+    assert "class='thumb'" in PAGE_HTML
+    assert "id='caption-btn'" in PAGE_HTML
+    assert "id='caption-checks'" in PAGE_HTML
+    assert "/api/caption" in PAGE_HTML
 
 
 @pytest.fixture()

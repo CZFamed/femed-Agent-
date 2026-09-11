@@ -9,6 +9,8 @@
   识别成功时同时签发"入库许可"凭据
 - ``POST /api/usage``    标记素材已进入内容 / 发布（触发 15 天冷却）
 - ``POST /api/recall``   按策略召回候选（新图优先 + 冷却过滤 + 加权随机）
+- ``GET  /api/asset-image`` 素材预览（按 asset_id 回传图片/视频，支持 Range）
+- ``POST /api/caption``  按平台模式生成短文（报告 §3 的文案结构）
 
 **入库许可（2026-09-11 新增）**：只有完成视觉识别的图片才允许入库。控制台上按钮在
 识别成功前是灰色不可点的；服务端同样校验凭据，绕过页面直接调接口也进不来。
@@ -17,15 +19,17 @@
 from __future__ import annotations
 
 import hashlib
+import glob
 import json
 import os
+import re
 import secrets
 from dataclasses import replace
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from pulse.services.media.catalog import MediaAsset, load_catalog
 from pulse.services.media.categories import (
@@ -40,6 +44,12 @@ from pulse.services.media.config import (
     RecallConfig,
 )
 from pulse.services.media.describe import build_describer, heuristic_describe, read_env_file
+from pulse.services.media.captions import (
+    CAPTION_SPECS,
+    caption_spec,
+    generate_caption,
+)
+from pulse.services.media.describe import vision_config_from_env
 from pulse.services.media.ingest import (
     DuplicateMediaError,
     MediaIngestor,
@@ -89,6 +99,15 @@ PAGE_HTML = (
     "margin-bottom:12px}"
     ".slot h3{font-size:14px;margin:0 0 8px}"
     ".slot .asset{background:#fcfcfd}"
+    ".picks{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px}"
+    ".thumb{width:100%;height:150px;object-fit:cover;border-radius:4px;display:block;"
+    "background:#eef1f4;margin-bottom:8px}"
+    ".caption-box{border-top:1px dashed #dcdfe4;margin-top:16px;padding-top:14px;"
+    "display:grid;gap:10px}"
+    ".checks{list-style:none;padding:0;margin:0;font-size:12px;display:flex;"
+    "flex-wrap:wrap;gap:6px 18px}"
+    ".checks li.ok{color:#1b5e20}"
+    ".checks li.bad{color:#b3261e;font-weight:600}"
     "@media (max-width:820px){.row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}"
     "button{background:#1f4e79;color:#fff;border:0;border-radius:5px;padding:9px 16px;cursor:pointer}"
     ".row button{height:36px;white-space:nowrap}"
@@ -158,7 +177,24 @@ PAGE_HTML = (
     "<button type='submit'>执行召回</button></div>"
     "</div></form>"
     "<div class='hint' id='platform-summary'></div>"
-    "<div id='recall-result'></div></section>"
+    "<div id='recall-result'></div>"
+    "<div class='caption-box' id='caption-box' style='display:none'>"
+    "<div id='caption-head'></div>"
+    "<div class='field'><label>补充要求（选填，例如“突出机床床身与导轨面”）</label>"
+    "<input id='caption-note'/></div>"
+    "<div><button type='button' id='caption-btn'>按该平台模式生成短文</button> "
+    "<button type='button' id='caption-copy'>复制短文</button></div>"
+    "<div class='hint' id='caption-status'></div>"
+    "<div class='field'><label>短文正文（可编辑，改完直接复制发布）</label>"
+    "<textarea id='caption-text' rows='10'></textarea></div>"
+    "<ul class='checks' id='caption-checks'></ul>"
+    "<div class='field' id='caption-comment-wrap' style='display:none'>"
+    "<label>第一条评论（链接放这里，正文不放）</label>"
+    "<textarea id='caption-comment' rows='2'></textarea></div>"
+    "<div class='field' id='caption-en-wrap' style='display:none'>"
+    "<label>英语母版（供复用与审校）</label>"
+    "<textarea id='caption-en' rows='6'></textarea></div>"
+    "</div></section>"
     "<section><h2>素材清单</h2><div class='grid' id='assets'></div></section>"
     "</main><script>"
     "function esc(v){var d=document.createElement('div');d.textContent=v==null?'':String(v);"
@@ -185,6 +221,23 @@ PAGE_HTML = (
     "function chosenProcess(){var p=document.getElementById('process-select');return p?p.value:'';}"
     "function chosenSub(){var s=document.getElementById('sub-process-select');return s?s.value:'';}"
     "var platforms=[];"
+    "var lastRecall=null;"
+    "function renderCaptionPanel(d){var box=document.getElementById('caption-box');"
+    "if(!d.platform||!d.picks||!d.picks.length){box.style.display='none';return;}"
+    "box.style.display='grid';"
+    "var key=d.platform.key;var spec=(captionSpecs.filter(function(s){return s.key===key;})[0])||{};"
+    "document.getElementById('caption-head').innerHTML=\"<h3>\"+esc(d.platform.name)"
+    "+\" 短文（按报告模式生成）</h3>\"+(spec.structure_text?(\"<p class='muted'>结构：\""
+    "+esc(spec.structure_text)+\" ｜ 长度：\"+esc(spec.length_text)+\" ｜ 标签 \"+spec.hashtag_min"
+    "+\"–\"+spec.hashtag_max+\" 个 ｜ \"+esc(spec.link_rule)+\"</p>\"):'');"
+    "document.getElementById('caption-text').value='';"
+    "document.getElementById('caption-checks').innerHTML='';"
+    "document.getElementById('caption-comment-wrap').style.display='none';"
+    "document.getElementById('caption-en-wrap').style.display='none';"
+    "document.getElementById('caption-status').textContent="
+    "'素材已就绪（'+d.picks.length+' 张），点上面的按钮生成。';}"
+    "var captionSpecs=[];"
+    "function applyCaptionSpecs(list){if(list&&list.length){captionSpecs=list;}}"
     "function applyPlatforms(list){if(!list||!list.length){return;}platforms=list;"
     "var sel=document.getElementById('platform-select');if(!sel||sel.options.length){return;}"
     "sel.innerHTML=list.map(function(p){"
@@ -202,6 +255,7 @@ PAGE_HTML = (
     "function refresh(){fetch('/api/state').then(function(r){return r.json();}).then(function(d){"
     "applyCategories(d.categories);"
     "applyPlatforms(d.platforms);"
+    "applyCaptionSpecs(d.caption_specs);"
     "var c=d.capacity;var b=document.getElementById('banner');"
     "b.className='banner '+(c.alert==='red'?'red':'ok');"
     "b.textContent=(c.alert==='red'?('红色预警：可召回容量仅 '+c.available+' 张，低于阈值 '"
@@ -278,6 +332,32 @@ PAGE_HTML = (
     "if(subSelect){subSelect.addEventListener('change',function(){"
     "var note=document.getElementById('category-note');"
     "if(note&&!visionTicket){note.textContent='';}});}"
+    "document.getElementById('caption-btn').addEventListener('click',function(){"
+    "if(!lastRecall||!lastRecall.platform){return;}"
+    "var status=document.getElementById('caption-status');"
+    "status.textContent='正在生成，请稍等…';"
+    "fetch('/api/caption',{method:'POST',headers:{'Content-Type':'application/json'},"
+    "body:JSON.stringify({platform:lastRecall.platform.key,"
+    "asset_ids:lastRecall.picks.map(function(p){return p.asset_id;}),"
+    "extra_note:document.getElementById('caption-note').value})})"
+    ".then(function(r){return r.json();}).then(function(d){"
+    "if(!d.ok){status.textContent='生成失败：'+d.error;return;}"
+    "document.getElementById('caption-text').value=d.full_text||d.text;"
+    "document.getElementById('caption-checks').innerHTML=(d.checks||[]).map(function(c){"
+    "return \"<li class='\"+(c.ok?'ok':'bad')+\"'>\"+(c.ok?'✓':'！')+esc(c.name)+'：'"
+    "+esc(c.detail)+'</li>';}).join('');"
+    "if(d.text_en){document.getElementById('caption-en').value=d.text_en;"
+    "document.getElementById('caption-en-wrap').style.display='flex';}"
+    "if(d.first_comment){document.getElementById('caption-comment').value=d.first_comment;"
+    "document.getElementById('caption-comment-wrap').style.display='flex';}"
+    "status.textContent='已按 '+d.platform_name+' 模式生成（正文 '+d.char_count+' 字符，基于 '"
+    "+d.material_count+' 张素材）。'+(d.warnings&&d.warnings.length?('提示：'+d.warnings.join('；')):'');"
+    "}).catch(function(){status.textContent='生成失败，请重试。';});});"
+    "document.getElementById('caption-copy').addEventListener('click',function(){"
+    "var text=document.getElementById('caption-text');"
+    "if(!text.value){return;}text.select();"
+    "try{navigator.clipboard.writeText(text.value);}catch(e){document.execCommand('copy');}"
+    "document.getElementById('caption-status').textContent='短文已复制到剪贴板。';});"
     "document.getElementById('recall').addEventListener('submit',function(e){e.preventDefault();"
     "var f=new FormData(e.target);"
     "fetch('/api/recall',{method:'POST',headers:{'Content-Type':'application/json'},"
@@ -293,14 +373,20 @@ PAGE_HTML = (
     "d.picks.map(function(p){return photoHtml(p);}).join('')"
     "||\"<p class='muted'>没有可召回素材（可能全部处于冷却期）。</p>\";return;}"
     "document.getElementById('recall-result').innerHTML=d.slots.map(function(s){"
-    "var body=s.picks.length?s.picks.map(function(p){return photoHtml(p);}).join('')"
+    "var body=s.picks.length?(\"<div class='picks'>\"+s.picks.map(function(p){return photoHtml(p);}).join('')+\"</div>\")"
     ":(s.blocked_by_cooldown"
     "?\"<p class='muted'>这一格有符合的素材，但都在 15 天冷却期内，暂时不能用。"
     "可以先换别的图，或等冷却结束。</p>\""
     ":\"<p class='muted'>这一格还没有合适的素材，建议按这个位次补拍。</p>\");"
     "return \"<div class='slot'><h3>\"+esc(s.role)+\"</h3>\""
-    "+(s.note?(\"<p class='muted'>\"+esc(s.note)+\"</p>\"):'')+body+'</div>';}).join('');});});"
+    "+(s.note?(\"<p class='muted'>\"+esc(s.note)+\"</p>\"):'')+body+'</div>';}).join('');"
+    "lastRecall=d;renderCaptionPanel(d);});});"
     "function photoHtml(p){return \"<div class='asset'><h3>\"+esc(p.file_name)+\"</h3>\""
+    "+(p.is_video"
+    "?(\"<video class='thumb' controls preload='metadata' src='/api/asset-image?asset_id=\""
+    "+encodeURIComponent(p.asset_id)+\"'></video>\")"
+    ":(\"<img class='thumb' loading='lazy' alt='' src='/api/asset-image?asset_id=\""
+    "+encodeURIComponent(p.asset_id)+\"'/>\"))"
     "+\"<span class='tag\"+(p.is_new?' new':'')+\"'>\"+esc(p.category)+\"</span>\""
     "+\"<p class='muted'>权重 \"+p.weight+\" ｜ 相似度 \"+p.similarity+\"</p>\""
     "+\"<p>\"+esc(p.summary)+\"</p></div>\";}"
@@ -310,6 +396,15 @@ PAGE_HTML = (
 
 class VisionRequiredError(ValueError):
     """入库许可未满足：这张图还没有完成视觉识别。"""
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    """路径必须落在素材根目录内——防止描述头部里的路径把请求带到库外。"""
+    try:
+        path.resolve().relative_to(root)
+    except (ValueError, OSError):
+        return False
+    return True
 
 
 #: 把开关写成这些值视为"关闭入库校验"
@@ -344,6 +439,7 @@ class MediaConsoleApp:
         describer: Any | None = None,
         env_root: str | Path | None = None,
         require_vision: bool | None = None,
+        caption_client: Any | None = None,
     ) -> None:
         self.config = config or RecallConfig()
         self.rag_root = Path(rag_root)
@@ -355,7 +451,13 @@ class MediaConsoleApp:
         root = Path(env_root) if env_root else None
         #: 可选品类目录：来自 RAG 库现有目录，决定下拉框与模型的可选范围
         self._catalog: CategoryCatalog = load_categories(self.rag_root)
-        self.describer = describer or build_describer(root, catalog=self._catalog)
+        #: 视觉模型配置：描述生成与短文生成共用同一条通道
+        self.vision_config = vision_config_from_env(root)
+        self.describer = describer or build_describer(
+            root, catalog=self._catalog, config=self.vision_config
+        )
+        #: 短文生成的注入点（测试用；为空则走真实 HTTP）
+        self.caption_client = caption_client
         # 入库许可：默认"必须先完成视觉识别"，可用环境变量临时关闭
         self.require_vision = (
             resolve_require_vision(root) if require_vision is None else require_vision
@@ -430,6 +532,7 @@ class MediaConsoleApp:
             },
             "categories": self._catalog.as_payload(),
             "platforms": platform_choices(),
+            "caption_specs": [spec.as_payload() for spec in CAPTION_SPECS.values()],
             "assets": items,
         }
 
@@ -613,6 +716,9 @@ class MediaConsoleApp:
             "similarity": pick.similarity,
             "weight": pick.weight,
             "is_new": pick.is_new,
+            "is_video": str(pick.file_name).lower().endswith(
+                (".mp4", ".mov", ".avi", ".mkv", ".webm")
+            ),
         }
 
     def recall(
@@ -689,6 +795,100 @@ class MediaConsoleApp:
             "picks": flat,
         }
 
+    # ---------- 预览与短文 ----------
+    def asset_by_id(self, asset_id: str) -> MediaAsset | None:
+        target = (asset_id or "").strip()
+        if not target:
+            return None
+        for asset in self.assets():
+            if asset.asset_id == target:
+                return asset
+        return None
+
+    def media_path(self, asset: MediaAsset) -> Path | None:
+        """定位素材文件。
+
+        描述头部里的 ``source_path`` 写的是**别的机器上的绝对路径**（`D:/菲美得/…`），
+        不能直接用。可靠做法是从描述文件的相对路径推出素材目录，再按文件名找。
+        """
+        try:
+            root = self.media_root.resolve()
+            relative = Path(asset.description_path).resolve().relative_to(self.rag_root.resolve())
+        except (ValueError, OSError):
+            return None
+        folder = root / relative.parent
+        name = Path(str(asset.file_name).replace("\\", "/")).name  # 防路径穿越
+        if not name:
+            return None
+        candidate = folder / name
+        if candidate.is_file() and _is_within(candidate, root):
+            return candidate
+        # 描述里的文件名可能与实际文件不同（例如少了扩展名）
+        for path in sorted(folder.glob(f"{glob.escape(Path(name).stem)}.*")):
+            if path.is_file() and _is_within(path, root):
+                return path
+        return None
+
+    def caption(
+        self,
+        *,
+        platform: str,
+        asset_ids: tuple[str, ...] | list[str] = (),
+        extra_note: str = "",
+    ) -> dict[str, Any]:
+        """按平台模式生成短文。
+
+        不指定素材时，用该平台当前召回出来的图（每个位次一张）。
+        """
+        spec = caption_spec(platform)
+        if spec is None:
+            raise ValueError(
+                f"不支持的平台：{platform!r}（可选：{', '.join(CAPTION_SPECS)}）"
+            )
+        catalog = {asset.asset_id: asset for asset in self.assets()}
+        picked = [catalog[item] for item in asset_ids if item in catalog]
+        if not picked:
+            recalled = self.recall(platform=platform, top_k=1)
+            picked = [
+                catalog[item["asset_id"]]
+                for item in recalled["picks"]
+                if item["asset_id"] in catalog
+            ]
+        if not picked:
+            raise ValueError("这个平台当前没有可用素材，先召回或补拍后再生成短文。")
+
+        result = generate_caption(
+            self.vision_config,
+            platform=platform,
+            materials=picked,
+            client=self.caption_client,
+            extra_note=extra_note,
+        )
+        return {
+            "ok": True,
+            "platform_name": spec.name,
+            "spec": spec.as_payload(),
+            "material_count": len(picked),
+            **result.as_payload(),
+        }
+
+
+def _content_type_for(path: Path) -> str:
+    suffix = path.suffix.lower()
+    return {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".gif": "image/gif",
+        ".mp4": "video/mp4",
+        ".mov": "video/quicktime",
+        ".avi": "video/x-msvideo",
+        ".mkv": "video/x-matroska",
+        ".webm": "video/webm",
+    }.get(suffix, "application/octet-stream")
+
 
 def _disposition_value(disposition: str, key: str) -> str:
     marker = f'{key}="'
@@ -739,11 +939,14 @@ class _Handler(BaseHTTPRequestHandler):
         """静默访问日志。"""
 
     def do_GET(self) -> None:  # noqa: N802 - 标准库命名
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path in ("/", "/index.html"):
             self._send_bytes(PAGE_HTML.encode("utf-8"), "text/html; charset=utf-8")
         elif path == "/api/state":
             self._send_json(self.app.state())
+        elif path == "/api/asset-image":
+            self._handle_asset_image(parse_qs(parsed.query))
         else:
             self._send_json({"ok": False, "error": "not found"}, status=404)
 
@@ -772,6 +975,16 @@ class _Handler(BaseHTTPRequestHandler):
                         query=str(payload.get("query", "")),
                         top_k=int(top_k) if top_k else None,
                         platform=str(payload.get("platform", "")),
+                    )
+                )
+            elif path == "/api/caption":
+                payload = json.loads(body or b"{}")
+                raw_ids = payload.get("asset_ids") or []
+                self._send_json(
+                    self.app.caption(
+                        platform=str(payload.get("platform", "")),
+                        asset_ids=[str(item) for item in raw_ids],
+                        extra_note=str(payload.get("extra_note", "")),
                     )
                 )
             else:
@@ -827,6 +1040,53 @@ class _Handler(BaseHTTPRequestHandler):
                 sub_process=fields.get("sub_process", "").strip() or "未分类",
             )
         )
+
+    def _handle_asset_image(self, query: dict[str, list[str]]) -> None:
+        """素材预览：按 asset_id 回传文件本体（图片直接看，视频可播放）。"""
+        asset_id = (query.get("asset_id") or [""])[0]
+        asset = self.app.asset_by_id(asset_id)
+        if asset is None:
+            self._send_json({"ok": False, "error": "素材不存在"}, status=404)
+            return
+        path = self.app.media_path(asset)
+        if path is None:
+            self._send_json({"ok": False, "error": "素材文件已不在磁盘上"}, status=404)
+            return
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            self._send_json({"ok": False, "error": f"读取失败：{exc}"}, status=500)
+            return
+        self._send_file(data, _content_type_for(path))
+
+    def _send_file(self, data: bytes, content_type: str) -> None:
+        """发送文件内容；支持 Range，否则视频无法拖动进度。"""
+        total = len(data)
+        start, end, partial = 0, total - 1, False
+        match = re.match(r"bytes=(\d*)-(\d*)", self.headers.get("Range") or "")
+        if match and (match.group(1) or match.group(2)):
+            if match.group(1):
+                start = int(match.group(1))
+                end = int(match.group(2)) if match.group(2) else total - 1
+            else:
+                start = max(0, total - int(match.group(2)))
+            end = min(end, total - 1)
+            if start > end or start >= total:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{total}")
+                self.end_headers()
+                return
+            partial = True
+        chunk = data[start : end + 1]
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(chunk)))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "private, max-age=600")
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
+        self.end_headers()
+        self.wfile.write(chunk)
 
     def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
         self._send_bytes(

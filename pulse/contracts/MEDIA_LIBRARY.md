@@ -1,6 +1,6 @@
-# 媒体资产库与召回策略契约 v1.1
+# 媒体资产库与召回策略契约 v1.2
 
-> 所有者：root　｜　冻结日期：2026-09-11　｜　最近升版：2026-09-11（v1.1）　｜　实现：`pulse/services/media/`
+> 所有者：root　｜　冻结日期：2026-09-11　｜　最近升版：2026-09-11（v1.2）　｜　实现：`pulse/services/media/`
 > 关联：`AGENTS.md` §3 铁律、`pulse/contracts/INTERFACES.md`（发布契约）
 
 本契约定义**素材入库**与**素材召回**两条链路。发布契约（INTERFACES.md）仍然有效，
@@ -91,6 +91,29 @@
 - 平台配置**不是平台优先级的事实来源**：优先级以 `pulse/contracts/INTERFACES.md` 与
   `pulse/shared/enums.py` 为准。
 
+### 2.10 素材预览（B10，v1.2 新增）
+
+- 控制台可预览召回的素材。定位素材文件**不得使用描述头部的 `source_path`**——
+  那里写的是别的机器上的绝对路径（`D:/菲美得/…`）；可靠做法是从**描述文件的相对路径**
+  推出素材目录，再按文件名查找。
+- 安全约束：文件名只取 basename（防路径穿越），解析结果必须落在 `media_root` 内。
+- 服务端支持 `Range` 请求（回 206），否则视频无法拖动进度。
+
+### 2.11 按平台短文生成（B11，v1.2 新增）
+
+- 短文按《四平台推荐风格与方式报告》§2.1/§3 的**文案结构**生成，规格固化在
+  `pulse/services/media/captions.py` 的 `CaptionSpec`：
+  LinkedIn `钩子行→痛点→能力证据→产品范围→CTA→标签`（600–1,200 字符、3–5 标签、0–2 emoji）；
+  Facebook `场景描述→一句结论→提问收尾→标签`（150–400、1–2 标签、2–4 emoji）；
+  TikTok `钩子→一句结论→标签`（≤150、4–5 标签）；VK `企业介绍→工艺→产品→设备→合作方式`
+  （500–1,500、2–5 标签，**俄语**，另存英语母版）。
+- **事实来源仅限给定素材的描述**。严禁编造材质牌号、公差、单重、月产能、检测结果、认证、
+  客户名称；模型输出会被 `find_unverified_claims` 与禁用语表（报告 §8.3）复核，
+  命中即回传警告。
+- 外链口径：LinkedIn / Facebook / TikTok **正文不得出现链接**（VK 允许）。
+  校验结果为一条独立条目回显，不阻断生成——让用户自己判断。
+- 生成**不做静默降级**：模型不可用或输出不完整时直接报错，不返回模板拼凑的文本。
+
 ---
 
 ## 3. 入库产物约定
@@ -117,6 +140,8 @@
 | POST | `/api/assets` | multipart 上传入库（`file`、`process`、`sub_process`、`keywords`、`summary`、`details`、`vision_ticket`） |
 | POST | `/api/usage` | 标记素材已用于内容 / 发布（`asset_id`、可选 `content_id`） |
 | POST | `/api/recall` | 召回（可选 `platform`、`query`、`top_k`）；带 `platform` 时返回按位次分组的 `slots` |
+| GET | `/api/asset-image` | 素材预览（`asset_id`）；回传图片/视频本体，支持 `Range`（206） |
+| POST | `/api/caption` | 按平台模式生成短文（`platform`、可选 `asset_ids`、`extra_note`） |
 
 错误语义：格式/体积不合规、重复素材、参数缺失一律 **400**；入库许可未满足一律 **403**
 （响应体含 `vision_required: true`）。响应体统一为 `{ok:false, error}`。
@@ -127,5 +152,6 @@
 
 | 版本 | 日期 | 变更 |
 | --- | --- | --- |
+| 1.2 | 2026-09-11 | 新增 B10 素材预览（禁用 `source_path`、需防穿越、支持 Range）与 B11 按平台短文生成（规格、事实边界、外链口径、禁止静默降级）；控制台接口表补 `/api/asset-image` 与 `/api/caption` |
 | 1.1 | 2026-09-11 | 补 B6 入库许可、B7 品类判定、B8 索引文件不计入素材、B9 分平台召回；控制台接口表补 `/api/describe`、`vision_ticket` 与 `categories`/`platforms` 字段，并订正错误码（许可不足为 403） |
 | 1.0 | 2026-09-11 | 首次冻结：入库、冷却、时效优先、加权随机、容量预警 |
