@@ -12,6 +12,7 @@ import pytest
 from pulse.services.media.describe import (
     SYSTEM_PROMPT,
     TextOnlyModelError,
+    VisionAPIError,
     VisionConfig,
     VisionDescriber,
     build_describer,
@@ -177,7 +178,7 @@ def test_text_only_model_is_rejected() -> None:
     describer = VisionDescriber(VisionConfig(api_key="k", model="deepseek-v4-flash"))
     with pytest.raises(TextOnlyModelError) as excinfo:
         describer.describe(b"x", file_name="a.png", process="铸件", sub_process="阀体")
-    assert "不支持图片输入" in str(excinfo.value)
+    assert "不能识图" in str(excinfo.value)
 
 
 def test_probe_png_is_valid() -> None:
@@ -237,3 +238,120 @@ def test_build_describer_falls_back_without_key(tmp_path, monkeypatch) -> None:
     describe = build_describer(tmp_path)
     description = describe(b"x", file_name="a.jpg", process="铸件", sub_process="阀体")
     assert description.source == "heuristic"
+
+
+def test_request_carries_opencode_session_header() -> None:
+    """OpenCode Go 缺 x-opencode-session 会直接 400，必须默认带上。"""
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["session"] = request.headers.get("x-opencode-session", "")
+        captured["auth"] = request.headers.get("authorization", "")
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(
+                                    {"summary": "灰色阀体铸件", "details": "可见灰色铸件。", "keywords": ["阀体"]},
+                                    ensure_ascii=False,
+                                ),
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    VisionDescriber(VisionConfig(api_key="secret-key"), client=client).describe(
+        probe_png(), file_name="a.png", process="铸件", sub_process="阀体"
+    )
+    assert captured["session"] == "pulse-media-library"
+    assert captured["auth"] == "Bearer secret-key"
+
+
+def test_api_error_surfaces_provider_message_and_hint() -> None:
+    """服务端错误必须把原文带出来——只报 "400 Bad Request" 无法排障。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "type": "error",
+                "error": {
+                    "type": "MissingSessionID",
+                    "message": "Request is missing x-opencode-session",
+                },
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    describer = VisionDescriber(VisionConfig(api_key="k"), client=client)
+    with pytest.raises(VisionAPIError) as excinfo:
+        describer.describe(probe_png(), file_name="a.png", process="铸件", sub_process="阀体")
+    message = str(excinfo.value)
+    assert excinfo.value.status == 400
+    assert excinfo.value.provider_type == "MissingSessionID"
+    assert "x-opencode-session" in message
+    assert "PULSE_VISION_SESSION" in message  # 带回中文处理建议
+
+
+def test_api_error_handles_non_json_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(502, content=b"<html>bad gateway</html>")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(VisionAPIError) as excinfo:
+        VisionDescriber(VisionConfig(api_key="k"), client=client).describe(
+            probe_png(), file_name="a.png", process="铸件", sub_process="阀体"
+        )
+    assert excinfo.value.status == 502
+    assert "bad gateway" in str(excinfo.value)
+
+
+def test_probe_vision_reports_session_and_model_on_failure() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={
+                "type": "error",
+                "error": {"type": "RegionError", "message": "only available hosted in China"},
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = probe_vision(VisionConfig(api_key="k"), client=client)
+    assert result["ok"] is False
+    assert result["stage"] == "request"
+    assert result["status"] == 403
+    assert result["session"] == "pulse-media-library"
+    assert "deepseek-v4.1-flash" in result["hint"]
+
+
+def test_recommended_model_can_read_images() -> None:
+    assert vision_model_supports_images("deepseek-v4.1-flash") is True
+    assert vision_model_supports_images("deepseek-v4-flash-vision-exp") is True
+    assert VisionConfig().model == "deepseek-v4.1-flash"
+    # 中文提示要同时给出推荐与备选
+    describer = VisionDescriber(VisionConfig(api_key="k", model="deepseek-v4-pro"))
+    with pytest.raises(TextOnlyModelError) as excinfo:
+        describer.describe(b"x", file_name="a.png", process="铸件", sub_process="阀体")
+    assert "deepseek-v4.1-flash" in str(excinfo.value)
+    assert "deepseek-v4-flash-vision-exp" in str(excinfo.value)
+
+
+def test_vision_config_reads_session_and_token_budget(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("PULSE_VISION_API_KEY", raising=False)
+    (tmp_path / ".env").write_text(
+        "PULSE_VISION_API_KEY=k\nPULSE_VISION_SESSION=my-session\n"
+        "PULSE_VISION_MAX_TOKENS=800\n",
+        encoding="utf-8",
+    )
+    config = vision_config_from_env(tmp_path)
+    assert config.session == "my-session"
+    assert config.max_output_tokens == 800

@@ -199,9 +199,11 @@ class VisionConfig:
 
     base_url: str = "https://opencode.ai/zen/go/v1"
     api_key: str = ""
-    model: str = "deepseek-v4-flash-vision-exp"
+    model: str = "deepseek-v4.1-flash"
     api_style: str = "responses"  # responses | chat
     timeout_s: float = 45.0
+    session: str = "pulse-media-library"
+    max_output_tokens: int = 2000
 
     @property
     def enabled(self) -> bool:
@@ -213,14 +215,85 @@ class VisionConfig:
         return f"{self.base_url.rstrip('/')}{suffix}"
 
 
-#: 目录里明确只有文本输入能力的模型（拿它们识图必然失败）
+#: 推荐模型（2026-09-11 实测可识图）
+RECOMMENDED_VISION_MODEL = "deepseek-v4.1-flash"
+
+#: 备选模型（同为 OpenCode Go 上可识图的模型）
+FALLBACK_VISION_MODEL = "deepseek-v4-flash-vision-exp"
+
+#: 拿它们识图必然失败的模型：或只有文本输入能力，或只在中国区托管且需显式开通
 TEXT_ONLY_MODELS: frozenset[str] = frozenset(
     {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-flash"}
 )
 
 
 class TextOnlyModelError(ValueError):
-    """当前配置的模型不支持图片输入。"""
+    """当前配置的模型不支持图片输入（或未开通）。"""
+
+
+class VisionAPIError(RuntimeError):
+    """视觉接口返回错误，已解析服务端原文并附上中文处理建议。"""
+
+    def __init__(
+        self,
+        status: int,
+        provider_type: str = "",
+        provider_message: str = "",
+        hint: str = "",
+    ) -> None:
+        self.status = status
+        self.provider_type = provider_type
+        self.provider_message = provider_message
+        self.hint = hint
+        parts = [f"视觉接口返回 HTTP {status}"]
+        if provider_type:
+            parts.append(f"错误类型 {provider_type}")
+        if provider_message:
+            parts.append(f"服务端原文：{provider_message}")
+        if hint:
+            parts.append(f"处理建议：{hint}")
+        super().__init__("；".join(parts))
+
+
+#: OpenCode Go 的已知错误类型 → 中文处理建议
+_PROVIDER_HINTS: dict[str, str] = {
+    "MissingSessionID": (
+        "本项目已自动附带 x-opencode-session 请求头；若仍报此错，"
+        "请在 .env 里手动设置 PULSE_VISION_SESSION 为任意非空字符串。"
+    ),
+    "RegionError": (
+        "该模型只在中国区托管且需要显式开通，请改用 "
+        f"{RECOMMENDED_VISION_MODEL}。"
+    ),
+}
+
+#: HTTP 状态码 → 中文处理建议（未被错误类型覆盖时使用）
+_STATUS_HINTS: dict[int, str] = {
+    401: "API Key 无效或已过期，请重新复制 PULSE_VISION_API_KEY。",
+    403: "密钥无该模型的调用权限，或模型需要先在 OpenCode 后台开通。",
+    404: "接口地址或模型名不对，请核对 PULSE_VISION_BASE_URL 与 PULSE_VISION_MODEL。",
+    429: "调用过于频繁或额度用尽，请稍后再试。",
+}
+
+
+def _provider_error_of(response: Any) -> tuple[str, str]:
+    """从错误响应里取出 ``(错误类型, 服务端原文)``。"""
+    try:
+        body = response.json()
+    except Exception:  # noqa: BLE001 - 非 JSON 响应退回纯文本
+        return "", (getattr(response, "text", "") or "").strip()[:300]
+    if not isinstance(body, dict):
+        return "", str(body)[:300]
+    error = body.get("error")
+    if isinstance(error, dict):
+        return str(error.get("type") or ""), str(error.get("message") or "")
+    if isinstance(error, str):
+        return "", error
+    return "", (body.get("message") or json.dumps(body, ensure_ascii=False))[:300]
+
+
+def _hint_for(status: int, provider_type: str) -> str:
+    return _PROVIDER_HINTS.get(provider_type) or _STATUS_HINTS.get(status, "")
 
 
 def vision_model_supports_images(model: str) -> bool:
@@ -239,12 +312,19 @@ def vision_config_from_env(root: Path | None = None) -> VisionConfig:
         timeout = float(raw_timeout)
     except ValueError:
         timeout = 45.0
+    raw_tokens = pick("PULSE_VISION_MAX_TOKENS", "2000")
+    try:
+        max_tokens = int(raw_tokens)
+    except ValueError:
+        max_tokens = 2000
     return VisionConfig(
         base_url=pick("PULSE_VISION_BASE_URL", "https://opencode.ai/zen/go/v1").rstrip("/"),
         api_key=pick("PULSE_VISION_API_KEY", ""),
-        model=pick("PULSE_VISION_MODEL", "deepseek-v4-flash-vision-exp"),
+        model=pick("PULSE_VISION_MODEL", RECOMMENDED_VISION_MODEL),
         api_style=pick("PULSE_VISION_API_STYLE", "responses"),
         timeout_s=timeout,
+        session=pick("PULSE_VISION_SESSION", "pulse-media-library"),
+        max_output_tokens=max_tokens,
     )
 
 
@@ -273,6 +353,8 @@ class VisionDescriber:
         headers = {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
+            # OpenCode Go 强制要求：缺这个头会直接返回 400 MissingSessionID
+            "x-opencode-session": self.config.session or "pulse-media-library",
         }
         url = self.config.endpoint
         if self._client is not None:
@@ -280,15 +362,23 @@ class VisionDescriber:
         else:
             with httpx.Client(timeout=self.config.timeout_s) as client:
                 response = client.post(url, headers=headers, json=payload)
-        response.raise_for_status()
+        if response.status_code >= 400:
+            provider_type, provider_message = _provider_error_of(response)
+            raise VisionAPIError(
+                response.status_code,
+                provider_type,
+                provider_message,
+                _hint_for(response.status_code, provider_type),
+            )
         return response.json()
 
     def _build_payload(self, data_url: str, *, file_name: str, process: str, sub_process: str):
         prompt = (
             f"品类：{process}/{sub_process}；源文件：{file_name}。请按系统提示输出 JSON。"
         )
+        limit = self.config.max_output_tokens
         if self.config.api_style == "responses":
-            return {
+            payload: dict[str, Any] = {
                 "model": self.config.model,
                 "instructions": SYSTEM_PROMPT,
                 "input": [
@@ -301,7 +391,10 @@ class VisionDescriber:
                     }
                 ],
             }
-        return {
+            if limit > 0:
+                payload["max_output_tokens"] = limit
+            return payload
+        payload = {
             "model": self.config.model,
             "temperature": 0.2,
             "response_format": {"type": "json_object"},
@@ -316,6 +409,9 @@ class VisionDescriber:
                 },
             ],
         }
+        if limit > 0:
+            payload["max_tokens"] = limit
+        return payload
 
     @staticmethod
     def _extract_text(body: dict[str, Any], api_style: str) -> str:
@@ -339,7 +435,8 @@ class VisionDescriber:
     ) -> Description:
         if not vision_model_supports_images(self.config.model):
             raise TextOnlyModelError(
-                f"模型 {self.config.model} 不支持图片输入，请改用 deepseek-v4-flash-vision-exp。"
+                f"模型 {self.config.model} 不能识图（只有文本能力，或需在中国区单独开通）。"
+                f"请改用 {RECOMMENDED_VISION_MODEL}（备选 {FALLBACK_VISION_MODEL}）。"
             )
         mime = _mime_of(file_name)
         encoded = base64.b64encode(data).decode("ascii")
@@ -361,7 +458,8 @@ class VisionDescriber:
         warnings: list[str] = []
         if suspicious:
             warnings.append(
-                "模型输出含画面不可见参数（" + "、".join(suspicious) + "），请人工核对后再入库。"
+                "描述里出现数字/规格类表述（" + "、".join(suspicious) + "）："
+                "若来自图中铭牌或标牌则可用，否则请删掉后再入库。"
             )
         return Description(
             summary=summary or details[:40],
@@ -447,22 +545,37 @@ def probe_vision(config: VisionConfig, *, client: Any | None = None) -> dict[str
             "ok": False,
             "stage": "model",
             "message": (
-                f"模型 {config.model} 不支持图片输入，"
-                "请改用 deepseek-v4-flash-vision-exp。"
+                f"模型 {config.model} 不能识图（只有文本能力，或需在中国区单独开通）；"
+                f"请改用 {RECOMMENDED_VISION_MODEL}（备选 {FALLBACK_VISION_MODEL}）。"
             ),
+            "model": config.model,
+            "endpoint": config.endpoint,
         }
     try:
         description = VisionDescriber(config, client=client).describe(
             probe_png(), file_name="probe.png", process="自检", sub_process="探针"
         )
     except Exception as exc:  # noqa: BLE001 - 自检需要把任何失败原因回报给用户
-        return {"ok": False, "stage": "request", "message": str(exc), "endpoint": config.endpoint}
+        result: dict[str, Any] = {
+            "ok": False,
+            "stage": "request",
+            "message": str(exc),
+            "endpoint": config.endpoint,
+            "model": config.model,
+            "session": config.session,
+        }
+        if isinstance(exc, VisionAPIError):
+            result["status"] = exc.status
+            result["provider_type"] = exc.provider_type
+            result["hint"] = exc.hint
+        return result
     return {
         "ok": True,
         "stage": "done",
         "message": "视觉模型可用。",
         "endpoint": config.endpoint,
         "model": config.model,
+        "session": config.session,
         "summary": description.summary,
         "warnings": list(description.warnings),
     }

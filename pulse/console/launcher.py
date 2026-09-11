@@ -179,6 +179,7 @@ def check_vision(root: str | Path | None = None) -> int:
     print(RULE)
     print(f"  接口地址：{config.endpoint}")
     print(f"  模型：{config.model}")
+    print(f"  会话标识：{config.session}（OpenCode Go 必需，缺了会返回 400）")
     key_state = f"已配置（{len(config.api_key)} 位）" if config.enabled else "未配置"
     print(f"  API Key：{key_state}")
     result = probe_vision(config)
@@ -187,10 +188,20 @@ def check_vision(root: str | Path | None = None) -> int:
         print(f"  示例描述：{result.get('summary', '')}")
         for warning in result.get("warnings") or []:
             print(f"  提示：{warning}")
+        print("  可以正常使用：回到控制台上传图片即可自动生成描述。")
         return 0
     print(f"  结果：不可用（阶段：{result.get('stage')}）")
     print(f"  原因：{result.get('message')}")
-    print("  请检查 .env 里的 PULSE_VISION_BASE_URL / PULSE_VISION_API_KEY / PULSE_VISION_MODEL。")
+    if result.get("hint"):
+        print(f"  建议：{result['hint']}")
+    if result.get("stage") == "config":
+        print("  请在 .env 的 PULSE_VISION_API_KEY 后面填入 Key（等号后不要留空格）。")
+    elif result.get("stage") == "model":
+        print("  请把 .env 里的 PULSE_VISION_MODEL 改成推荐模型。")
+    else:
+        print("  请核对 .env 里的四项配置：")
+        print("    PULSE_VISION_BASE_URL / PULSE_VISION_API_KEY")
+        print("    PULSE_VISION_MODEL / PULSE_VISION_API_STYLE")
     return 1
 
 
