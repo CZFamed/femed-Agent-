@@ -13,6 +13,7 @@ from pulse.services.media.describe import (
     SYSTEM_PROMPT,
     TextOnlyModelError,
     RETRYABLE_STATUS,
+    OutputTruncatedError,
     VisionAPIError,
     VisionConfig,
     VisionDescriber,
@@ -600,3 +601,75 @@ def test_auth_error_is_not_retried(monkeypatch) -> None:
 def test_default_timeout_is_generous_for_large_photos() -> None:
     """默认超时不能按小图设：11MB 实拍图实测就要 13 秒。"""
     assert VisionConfig().timeout_s >= 60
+
+
+# ---------- 输出预算被思考吃光（撞 max_output_tokens） ----------
+
+
+def test_incomplete_response_raises_output_truncated() -> None:
+    body = {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "usage": {"output_tokens": 4000, "output_tokens_details": {"reasoning_tokens": 4000}},
+        "output": [{"type": "reasoning", "content": [{"type": "reasoning_text", "text": "..."}]}],
+    }
+    with pytest.raises(OutputTruncatedError) as excinfo:
+        describe_module.check_response_complete(body)
+    assert "截断" in str(excinfo.value)
+    assert "4000" in str(excinfo.value), "要把实际用量带出来，便于判断该调多大"
+
+
+def test_escalated_budget_math() -> None:
+    assert describe_module.escalated_budget(2000) == 6000
+    assert describe_module.escalated_budget(4000) == 12000
+    assert describe_module.escalated_budget(0) == 8000, "没配上限时给个安全值"
+    assert describe_module.escalated_budget(100000) == 16000, "要有天花板，别真发一个天价预算"
+
+
+def test_describe_retries_with_bigger_budget_when_truncated() -> None:
+    """思考吃光预算时不能直接放弃——放大预算重试，这是"入不了库"的真凶之一。"""
+    seen_max_tokens: list[int] = []
+    truncated = {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "usage": {"output_tokens": 4000, "output_tokens_details": {"reasoning_tokens": 4000}},
+        "output": [{"type": "reasoning", "content": []}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        seen_max_tokens.append(int(payload.get("max_output_tokens") or 0))
+        if len(seen_max_tokens) == 1:
+            return httpx.Response(200, json=truncated)
+        return httpx.Response(200, json=_ok_body())
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    config = VisionConfig(api_key="k", max_output_tokens=2000)
+    description = VisionDescriber(config, client=client).describe(
+        probe_png(), file_name="a.png", process="铸件", sub_process="阀体"
+    )
+    assert description.source == "vision"
+    assert seen_max_tokens == [2000, 6000], "第二次必须放大预算"
+
+
+def test_describe_gives_up_if_still_truncated() -> None:
+    truncated = {
+        "status": "incomplete",
+        "incomplete_details": {"reason": "max_output_tokens"},
+        "usage": {"output_tokens": 12000, "output_tokens_details": {"reasoning_tokens": 12000}},
+        "output": [{"type": "reasoning", "content": []}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=truncated)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(OutputTruncatedError):
+        VisionDescriber(VisionConfig(api_key="k"), client=client).describe(
+            probe_png(), file_name="a.png", process="铸件", sub_process="阀体"
+        )
+
+
+def test_default_output_budget_leaves_headroom() -> None:
+    """实测输出最多 1429 token；上限要留出足够冗余。"""
+    assert VisionConfig().max_output_tokens >= 4000

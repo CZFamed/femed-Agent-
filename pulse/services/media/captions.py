@@ -22,9 +22,11 @@ from typing import Any, Iterable
 
 from pulse.services.media.describe import (
     SYSTEM_PROMPT,
+    OutputTruncatedError,
     VisionConfig,
     _loads_json_object,
     check_response_complete,
+    escalated_budget,
     find_unverified_claims,
     post_json,
 )
@@ -461,12 +463,18 @@ def generate_caption(
     prompt_parts += ["", "只输出 JSON，不要输出任何解释。"]
 
     limit = config.caption_max_tokens or CAPTION_MAX_TOKENS
-    body = post_json(
-        config,
-        _payload(config, instructions, "\n".join(prompt_parts), max_tokens=limit),
-        client=client,
-    )
-    check_response_complete(body)
+    prompt = "\n".join(prompt_parts)
+    body = post_json(config, _payload(config, instructions, prompt, max_tokens=limit), client=client)
+    try:
+        check_response_complete(body)
+    except OutputTruncatedError:
+        # 短文更长、思考更久，同样给它一次放大预算的机会
+        body = post_json(
+            config,
+            _payload(config, instructions, prompt, max_tokens=escalated_budget(limit)),
+            client=client,
+        )
+        check_response_complete(body)
     parsed = _loads_json_object(_extract_text(body, config.api_style))
 
     text = str(parsed.get("text") or "").strip()

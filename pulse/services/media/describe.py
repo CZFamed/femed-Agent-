@@ -239,7 +239,10 @@ class VisionConfig:
     #: 超时属于可重试错误，但把默认值放宽能从源头减少这类失败。
     timeout_s: float = 90.0
     session: str = "pulse-media-library"
-    max_output_tokens: int = 2000
+    #: 描述输出上限。实测思考平均 680、最多 1199，输出最多 1429；
+    #: 旧上限 2,000 只剩不到 40% 余量，复杂画面一越界就是"正文为空、入不了库"。
+    #: 注意：这只是上限而非收费项，调大不会增加正常调用的成本。
+    max_output_tokens: int = 4000
     #: 短文比描述长得多，且模型会先"思考"占掉大量输出预算，所以单独放宽
     caption_max_tokens: int = 8000
 
@@ -267,6 +270,15 @@ TEXT_ONLY_MODELS: frozenset[str] = frozenset(
 
 class TextOnlyModelError(ValueError):
     """当前配置的模型不支持图片输入（或未开通）。"""
+
+
+class OutputTruncatedError(ValueError):
+    """模型输出被 ``max_output_tokens`` 截断。
+
+    这个模型是推理模型：它先"思考"很长一段，思考也算输出 token。
+    预算不够时思考就把额度吃光，正文一个字都出不来（``status=incomplete``）。
+    单独建一个异常类型，好让调用方**用更大的预算重试**，而不是直接放弃。
+    """
 
 
 class VisionAPIError(RuntimeError):
@@ -347,12 +359,24 @@ def check_response_complete(body: dict[str, Any]) -> None:
     usage = body.get("usage") or {}
     reasoning = (usage.get("output_tokens_details") or {}).get("reasoning_tokens")
     if reason == "max_output_tokens":
-        raise ValueError(
+        raise OutputTruncatedError(
             f"模型输出被上限截断（共用 {usage.get('output_tokens')} tokens，"
             f"其中思考 {reasoning} tokens），没能写出正文。"
             "请调大输出预算或降低思考强度后重试。"
         )
     raise ValueError(f"模型返回不完整（原因：{reason}）")
+
+
+def escalated_budget(limit: int, *, cap: int = 16000) -> int:
+    """被截断后放大预算重试用。
+
+    实测（2026-09-11，12 张真实实拍图）：思考 token 平均 680、最多 1199，
+    输出 token 最多 1429。看似离 2,000 的旧上限还有余量，但画面更复杂时很容易越界，
+    一越界就是"正文为空 → 退回基础描述 → 入不了库"。所以留足冗余。
+    """
+    if limit <= 0:
+        return 8000
+    return min(max(limit * 3, limit + 4000), cap)
 
 
 def vision_model_supports_images(model: str) -> bool:
@@ -371,11 +395,11 @@ def vision_config_from_env(root: Path | None = None) -> VisionConfig:
         timeout = float(raw_timeout)
     except ValueError:
         timeout = 90.0
-    raw_tokens = pick("PULSE_VISION_MAX_TOKENS", "2000")
+    raw_tokens = pick("PULSE_VISION_MAX_TOKENS", "4000")
     try:
         max_tokens = int(raw_tokens)
     except ValueError:
-        max_tokens = 2000
+        max_tokens = 4000
     raw_caption_tokens = pick("PULSE_CAPTION_MAX_TOKENS", "8000")
     try:
         caption_tokens = int(raw_caption_tokens)
@@ -558,7 +582,15 @@ class VisionDescriber:
             sub_process=sub_process,
         )
         body = self._post(payload)
-        check_response_complete(body)
+        try:
+            check_response_complete(body)
+        except OutputTruncatedError:
+            # 思考把预算吃光了：放大预算再来一次，而不是直接退回基础描述
+            limit = int(payload.get("max_output_tokens") or self.config.max_output_tokens or 0)
+            retry_payload = {**payload}
+            retry_payload["max_output_tokens"] = escalated_budget(limit)
+            body = self._post(retry_payload)
+            check_response_complete(body)
         parsed = _loads_json_object(self._extract_text(body, self.config.api_style))
         summary = str(parsed.get("summary") or "").strip()
         details = str(parsed.get("details") or "").strip()
