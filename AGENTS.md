@@ -55,7 +55,9 @@
 | `pulse/services/scheduler/` | A3 Scheduler | 调度域 |
 | `pulse/services/identity/` | A3 Scheduler | 账号与凭据域 |
 | `pulse/services/compliance/` | A4 Compliance | 合规与治理域 |
-| `pulse/api/`、`pulse/console/` | A5 Platform | 接口层与控制台 |
+| `pulse/api/` | A5 Platform | 接口层 |
+| `pulse/console/` | **root**（2026-09-11 起） | 图形化控制台（素材库可视化） |
+| `pulse/services/media/` | **root**（2026-09-11 新增） | 媒体资产库：素材入库 + 召回策略 |
 | `pulse/tests/` | A6 Verifier | **跨域**契约/集成/风控测试 |
 | `pulse/shared/` | **root** | 跨域共用类型（只读给他人） |
 | `pulse/services/__init__.py` | **root** | 三个域的父包（只读给他人） |
