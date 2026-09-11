@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import struct
 import threading
 from pathlib import Path
@@ -805,6 +806,48 @@ def test_page_ships_export_ui(tmp_path) -> None:
     assert "id='export-btn'" in PAGE_HTML
     assert "/api/export" in PAGE_HTML
     assert "renderExportButton" in PAGE_HTML
+
+
+# ---------- 可读性：禁用态按钮的文字不能被"洗掉" ----------
+
+
+def _relative_luminance(color: str) -> float:
+    value = color.lstrip("#")
+    if len(value) == 3:  # #fff → #ffffff
+        value = "".join(char * 2 for char in value)
+    parts = [int(value[index : index + 2], 16) / 255 for index in (0, 2, 4)]
+    converted = [
+        value / 12.92 if value <= 0.03928 else ((value + 0.055) / 1.055) ** 2.4
+        for value in parts
+    ]
+    return 0.2126 * converted[0] + 0.7152 * converted[1] + 0.0722 * converted[2]
+
+
+def _contrast(foreground: str, background: str) -> float:
+    a, b = _relative_luminance(foreground), _relative_luminance(background)
+    high, low = max(a, b), min(a, b)
+    return (high + 0.05) / (low + 0.05)
+
+
+def test_disabled_button_label_stays_readable() -> None:
+    """禁用态按钮的文字必须能读出来。
+
+    曾经用近白字配浅灰底（对比度 1.42:1），按钮看着就是个灰块——
+    "上传并入库"和"导出这一帖的素材"都默认禁用，标签等于不存在。
+    """
+    match = re.search(
+        r"button\[disabled\]\{background:(#[0-9a-f]{3,6});color:(#[0-9a-f]{3,6})", PAGE_HTML
+    )
+    assert match, "找不到禁用态按钮样式"
+    background, foreground = match.group(1), match.group(2)
+    ratio = _contrast(foreground, background)
+    assert ratio >= 4.5, f"禁用态文字对比度只有 {ratio:.2f}:1，读不出来（要求 ≥ 4.5:1）"
+
+
+def test_enabled_button_label_is_readable() -> None:
+    match = re.search(r"button\{background:(#[0-9a-f]{3,6});color:(#[0-9a-f]{3,6})", PAGE_HTML)
+    assert match, "找不到按钮基础样式"
+    assert _contrast(match.group(2), match.group(1)) >= 4.5
 
 
 @pytest.fixture()
