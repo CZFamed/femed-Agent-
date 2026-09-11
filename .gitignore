@@ -28,3 +28,8 @@ RAG知识库/
 .uv-cache/
 .DS_Store
 Thumbs.db
+
+# ---- 运行时数据 ----
+# 素材使用台账（控制台首次启动自动生成，不入库）
+.pulse/
+*.lnk

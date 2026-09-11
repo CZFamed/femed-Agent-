@@ -23,7 +23,10 @@
 # 文本格式的 diff 语义提示
 *.md diff=markdown
 
+# Windows 批处理必须用 CRLF，否则 cmd 解析标签/块可能出错
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 # 锁文件/生成物：折叠 diff，降低评审噪音
 uv.lock            -diff
 **/__pycache__/**  export-ignore
-
