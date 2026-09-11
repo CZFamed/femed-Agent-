@@ -198,5 +198,15 @@ TLS 若报 `schannel: AcquireCredentialsHandle failed`，改用 OpenSSL 后端�
 填入 `PULSE_VISION_API_KEY` 即可启用视觉模型；不配置也能用，只是描述里只含文件名、
 拍摄时间与分辨率等信息，画面内容会标注"待补充"。
 
+视觉模型默认对接 OpenCode Go 的 `deepseek-v4-flash-vision-exp`（仓库里已放好空 `.env`，
+填 Key 即可）。填完双击 `检查视觉模型.bat` 自检：
+
+| 自检结果 | 含义 |
+| --- | --- |
+| 结果：可用 | 地址、密钥、模型都正确，可以开始上传图片 |
+| 阶段：config | `.env` 里还没填 `PULSE_VISION_API_KEY` |
+| 阶段：model | 模型不支持图片输入，请改用 `deepseek-v4-flash-vision-exp` |
+| 阶段：request | 网络或鉴权失败（401 表示 Key 无效） |
+
 如果提示"没有找到运行环境"或"没有找到文件夹"，说明拷贝不完整：需要连同
 `.venv`（运行环境）和上一层的 `菲美得产品图片`（实拍素材）一起拷贝。

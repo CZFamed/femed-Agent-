@@ -11,14 +11,18 @@ import pytest
 
 from pulse.services.media.describe import (
     SYSTEM_PROMPT,
+    TextOnlyModelError,
     VisionConfig,
     VisionDescriber,
     build_describer,
     find_unverified_claims,
     heuristic_describe,
     parse_capture_time,
+    probe_png,
     probe_image,
+    probe_vision,
     vision_config_from_env,
+    vision_model_supports_images,
 )
 
 
@@ -108,7 +112,9 @@ def test_vision_describer_parses_json_and_warns_on_specs() -> None:
         )
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    describer = VisionDescriber(VisionConfig(api_key="k", model="vision-test"), client=client)
+    describer = VisionDescriber(
+        VisionConfig(api_key="k", model="vision-test", api_style="chat"), client=client
+    )
     description = describer.describe(
         _png(800, 600), file_name="IMG_1.png", process="铸件", sub_process="机床件"
     )
@@ -132,6 +138,87 @@ def test_vision_describer_rejects_empty_output() -> None:
     describer = VisionDescriber(VisionConfig(api_key="k"), client=client)
     with pytest.raises(ValueError):
         describer.describe(b"x", file_name="a.png", process="铸件", sub_process="阀体")
+
+
+def test_responses_style_payload_and_parsing() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["payload"] = json.loads(request.content)
+        text = "```json\n" + json.dumps(
+            {"summary": "阀体铸件整齐堆放", "details": "可见灰色阀体铸件。", "keywords": ["阀体"]},
+            ensure_ascii=False,
+        ) + "\n```"
+        return httpx.Response(
+            200,
+            json={"output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}]},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    describer = VisionDescriber(
+        VisionConfig(api_key="k", model="deepseek-v4-flash-vision-exp"), client=client
+    )
+    description = describer.describe(
+        probe_png(), file_name="a.png", process="铸件", sub_process="阀体"
+    )
+    assert captured["url"] == "https://opencode.ai/zen/go/v1/responses"
+    payload = captured["payload"]
+    assert payload["model"] == "deepseek-v4-flash-vision-exp"
+    assert payload["instructions"] == SYSTEM_PROMPT
+    assert payload["input"][0]["content"][1]["type"] == "input_image"
+    assert description.summary == "阀体铸件整齐堆放"
+    assert description.keywords == ("阀体",)
+
+
+def test_text_only_model_is_rejected() -> None:
+    assert vision_model_supports_images("deepseek-v4-flash-vision-exp") is True
+    assert vision_model_supports_images("deepseek-v4-flash") is False
+    describer = VisionDescriber(VisionConfig(api_key="k", model="deepseek-v4-flash"))
+    with pytest.raises(TextOnlyModelError) as excinfo:
+        describer.describe(b"x", file_name="a.png", process="铸件", sub_process="阀体")
+    assert "不支持图片输入" in str(excinfo.value)
+
+
+def test_probe_png_is_valid() -> None:
+    info = probe_image(probe_png())
+    assert (info.fmt, info.width, info.height) == ("png", 8, 8)
+
+
+def test_probe_vision_reports_config_and_model_problems() -> None:
+    assert probe_vision(VisionConfig())["stage"] == "config"
+    wrong_model = probe_vision(VisionConfig(api_key="k", model="deepseek-v4-flash"))
+    assert wrong_model["stage"] == "model"
+    assert "deepseek-v4-flash-vision-exp" in wrong_model["message"]
+
+
+def test_probe_vision_ok_with_mock_client() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(
+                                    {"summary": "纯色探针图", "details": "红色方块。", "keywords": []},
+                                    ensure_ascii=False,
+                                ),
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = probe_vision(VisionConfig(api_key="k"), client=client)
+    assert result["ok"] is True
+    assert result["stage"] == "done"
+    assert result["endpoint"].endswith("/responses")
 
 
 def test_vision_config_reads_env_file(tmp_path, monkeypatch) -> None:

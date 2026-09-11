@@ -24,7 +24,11 @@ from pulse.services.media.describe import (
     find_unverified_claims,
     heuristic_describe,
     parse_capture_time,
+    probe_png,
     probe_image,
+    probe_vision,
+    vision_config_from_env,
+    vision_model_supports_images,
 )
 from pulse.services.media.ingest import MediaIngestor, UnsupportedMediaError
 from pulse.services.media.ledger import RecallLedger
@@ -52,5 +56,9 @@ __all__ = [
     "heuristic_describe",
     "load_catalog",
     "parse_capture_time",
+    "probe_png",
     "probe_image",
+    "probe_vision",
+    "vision_config_from_env",
+    "vision_model_supports_images",
 ]

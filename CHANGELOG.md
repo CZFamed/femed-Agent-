@@ -5,6 +5,32 @@
 
 ---
 
+## [1.4.0] — 2026-09-11
+
+**视觉模型接入改为 OpenCode Go + DeepSeek，并新增配置自检**。
+
+### 变更
+
+- **接入形态**：OpenCode Go 使用 Responses API（`https://opencode.ai/zen/go/v1/responses`），
+  描述器同时支持 `responses` 与 `chat`（`/chat/completions`）两种形态，用
+  `PULSE_VISION_API_STYLE` 切换，默认 `responses`。
+- **默认模型**：`deepseek-v4-flash-vision-exp`。模型目录显示
+  `deepseek-v4-flash` / `deepseek-v4-pro` / `deepseek-flash` **只支持文本输入**，
+  拿它们识图会直接失败，因此配置成这三个模型时会在调用前拦截并给出中文提示。
+- **配置自检**：新增 `python -m pulse.console.launcher --check-vision` 与
+  `检查视觉模型.bat`，用一张 8×8 探针图验证"地址 / 密钥 / 模型能否识图"，
+  失败时区分 config（未填 Key）、model（模型不支持图片）、request（网络或鉴权）三个阶段。
+- **随仓库提供空配置**：`.env`（已 gitignore，Key 留空待填）与 `.env.example`（含说明）。
+
+### 验证
+
+- 未填 Key：自检返回"未配置 PULSE_VISION_API_KEY"。
+- 用无效 Key 实测：接口返回 `401 Unauthorized`（`/zen/go/v1/responses`），
+  证明地址与请求形态正确，只差有效 Key。
+- 测试基线：**161 项全绿**（1.3.0 的 156 项 + 本次 5 项）。
+
+---
+
 ## [1.3.0] — 2026-09-11
 
 **素材描述自动生成：上传图片不再需要手填描述**。

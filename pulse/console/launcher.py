@@ -168,6 +168,32 @@ def make_shortcut() -> int:
     return 1
 
 
+def check_vision(root: str | Path | None = None) -> int:
+    """自检视觉模型：接口地址 / 密钥 / 模型是否能识图。"""
+    from pulse.services.media.describe import probe_vision, vision_config_from_env
+
+    base = Path(root) if root else project_root()
+    config = vision_config_from_env(base)
+    print(RULE)
+    print("  视觉模型自检")
+    print(RULE)
+    print(f"  接口地址：{config.endpoint}")
+    print(f"  模型：{config.model}")
+    key_state = f"已配置（{len(config.api_key)} 位）" if config.enabled else "未配置"
+    print(f"  API Key：{key_state}")
+    result = probe_vision(config)
+    if result.get("ok"):
+        print("  结果：可用")
+        print(f"  示例描述：{result.get('summary', '')}")
+        for warning in result.get("warnings") or []:
+            print(f"  提示：{warning}")
+        return 0
+    print(f"  结果：不可用（阶段：{result.get('stage')}）")
+    print(f"  原因：{result.get('message')}")
+    print("  请检查 .env 里的 PULSE_VISION_BASE_URL / PULSE_VISION_API_KEY / PULSE_VISION_MODEL。")
+    return 1
+
+
 def run(
     *,
     host: str = DEFAULT_HOST,
@@ -226,9 +252,12 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - 手工入�
     parser.add_argument("--root", default=None, help="仓库根目录（默认自动定位）")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     parser.add_argument("--create-shortcut", action="store_true", help="只创建桌面快捷方式")
+    parser.add_argument("--check-vision", action="store_true", help="自检视觉模型配置")
     args = parser.parse_args(argv)
     if args.create_shortcut:
         return make_shortcut()
+    if args.check_vision:
+        return check_vision(args.root)
     return run(
         host=args.host,
         port=args.port,

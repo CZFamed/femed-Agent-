@@ -191,16 +191,40 @@ def heuristic_describe(
 
 @dataclass(frozen=True)
 class VisionConfig:
-    """视觉模型配置（OpenAI 兼容接口）。"""
+    """视觉模型配置。
 
-    base_url: str = "https://api.openai.com/v1"
+    默认对接 OpenCode Go（Responses API）；任何 OpenAI 兼容端点都可通过
+    ``PULSE_VISION_BASE_URL`` + ``PULSE_VISION_API_STYLE`` 覆盖。
+    """
+
+    base_url: str = "https://opencode.ai/zen/go/v1"
     api_key: str = ""
-    model: str = "gpt-4o-mini"
+    model: str = "deepseek-v4-flash-vision-exp"
+    api_style: str = "responses"  # responses | chat
     timeout_s: float = 45.0
 
     @property
     def enabled(self) -> bool:
         return bool(self.api_key.strip())
+
+    @property
+    def endpoint(self) -> str:
+        suffix = "/responses" if self.api_style == "responses" else "/chat/completions"
+        return f"{self.base_url.rstrip('/')}{suffix}"
+
+
+#: 目录里明确只有文本输入能力的模型（拿它们识图必然失败）
+TEXT_ONLY_MODELS: frozenset[str] = frozenset(
+    {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-flash"}
+)
+
+
+class TextOnlyModelError(ValueError):
+    """当前配置的模型不支持图片输入。"""
+
+
+def vision_model_supports_images(model: str) -> bool:
+    return model.strip() not in TEXT_ONLY_MODELS
 
 
 def vision_config_from_env(root: Path | None = None) -> VisionConfig:
@@ -216,9 +240,10 @@ def vision_config_from_env(root: Path | None = None) -> VisionConfig:
     except ValueError:
         timeout = 45.0
     return VisionConfig(
-        base_url=pick("PULSE_VISION_BASE_URL", "https://api.openai.com/v1").rstrip("/"),
+        base_url=pick("PULSE_VISION_BASE_URL", "https://opencode.ai/zen/go/v1").rstrip("/"),
         api_key=pick("PULSE_VISION_API_KEY", ""),
-        model=pick("PULSE_VISION_MODEL", "gpt-4o-mini"),
+        model=pick("PULSE_VISION_MODEL", "deepseek-v4-flash-vision-exp"),
+        api_style=pick("PULSE_VISION_API_STYLE", "responses"),
         timeout_s=timeout,
     )
 
@@ -236,7 +261,7 @@ def _mime_of(file_name: str) -> str:
 
 
 class VisionDescriber:
-    """调用多模态模型生成描述。"""
+    """调用多模态模型生成描述（支持 Responses API 与 Chat Completions）。"""
 
     def __init__(self, config: VisionConfig, *, client: Any | None = None) -> None:
         self.config = config
@@ -249,7 +274,7 @@ class VisionDescriber:
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
         }
-        url = f"{self.config.base_url}/chat/completions"
+        url = self.config.endpoint
         if self._client is not None:
             response = self._client.post(url, headers=headers, json=payload)
         else:
@@ -258,12 +283,25 @@ class VisionDescriber:
         response.raise_for_status()
         return response.json()
 
-    def describe(
-        self, data: bytes, *, file_name: str, process: str, sub_process: str
-    ) -> Description:
-        mime = _mime_of(file_name)
-        encoded = base64.b64encode(data).decode("ascii")
-        payload = {
+    def _build_payload(self, data_url: str, *, file_name: str, process: str, sub_process: str):
+        prompt = (
+            f"品类：{process}/{sub_process}；源文件：{file_name}。请按系统提示输出 JSON。"
+        )
+        if self.config.api_style == "responses":
+            return {
+                "model": self.config.model,
+                "instructions": SYSTEM_PROMPT,
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": prompt},
+                            {"type": "input_image", "image_url": data_url},
+                        ],
+                    }
+                ],
+            }
+        return {
             "model": self.config.model,
             "temperature": 0.2,
             "response_format": {"type": "json_object"},
@@ -272,24 +310,47 @@ class VisionDescriber:
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                f"品类：{process}/{sub_process}；源文件：{file_name}。"
-                                "请按系统提示输出 JSON。"
-                            ),
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{mime};base64,{encoded}"},
-                        },
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
                     ],
                 },
             ],
         }
-        body = self._post(payload)
+
+    @staticmethod
+    def _extract_text(body: dict[str, Any], api_style: str) -> str:
+        """从两种 API 形态的响应里取出模型文本。"""
+        if api_style == "responses":
+            chunks: list[str] = []
+            for item in body.get("output") or []:
+                if not isinstance(item, dict) or item.get("type") != "message":
+                    continue
+                for part in item.get("content") or []:
+                    if isinstance(part, dict) and part.get("type") in ("output_text", "text"):
+                        chunks.append(str(part.get("text") or ""))
+            if not chunks and isinstance(body.get("output_text"), str):
+                chunks.append(body["output_text"])
+            return "".join(chunks)
         content = body["choices"][0]["message"]["content"]
-        parsed = json.loads(content) if isinstance(content, str) else dict(content)
+        return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+
+    def describe(
+        self, data: bytes, *, file_name: str, process: str, sub_process: str
+    ) -> Description:
+        if not vision_model_supports_images(self.config.model):
+            raise TextOnlyModelError(
+                f"模型 {self.config.model} 不支持图片输入，请改用 deepseek-v4-flash-vision-exp。"
+            )
+        mime = _mime_of(file_name)
+        encoded = base64.b64encode(data).decode("ascii")
+        payload = self._build_payload(
+            f"data:{mime};base64,{encoded}",
+            file_name=file_name,
+            process=process,
+            sub_process=sub_process,
+        )
+        body = self._post(payload)
+        parsed = _loads_json_object(self._extract_text(body, self.config.api_style))
         summary = str(parsed.get("summary") or "").strip()
         details = str(parsed.get("details") or "").strip()
         raw_keywords = parsed.get("keywords") or []
@@ -327,3 +388,81 @@ def build_describer(
         )
 
     return _fallback
+
+
+def _loads_json_object(text: str) -> dict[str, Any]:
+    """容错解析模型输出的 JSON（允许 ```json 代码块与前后散文）。"""
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, dict) else {"summary": str(parsed)}
+    except json.JSONDecodeError:
+        pass
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start >= 0 and end > start:
+        parsed = json.loads(cleaned[start : end + 1])
+        return parsed if isinstance(parsed, dict) else {}
+    raise ValueError("视觉模型返回内容不是 JSON")
+
+
+def probe_png(width: int = 8, height: int = 8) -> bytes:
+    """生成一张纯色探针图（标准库实现，用于视觉模型自检）。"""
+    import zlib
+
+    raw = b"".join(b"\x00" + b"\xff\x00\x00" * width for _ in range(height))
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        body = tag + payload
+        return (
+            struct.pack(">I", len(payload))
+            + body
+            + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+def probe_vision(config: VisionConfig, *, client: Any | None = None) -> dict[str, Any]:
+    """自检：验证地址、密钥与模型是否真的能识图。
+
+    返回 ``{"ok": bool, "stage": str, "message": str, ...}``，供命令行与页面提示使用。
+    """
+    if not config.enabled:
+        return {
+            "ok": False,
+            "stage": "config",
+            "message": "未配置 PULSE_VISION_API_KEY，无法调用视觉模型。",
+        }
+    if not vision_model_supports_images(config.model):
+        return {
+            "ok": False,
+            "stage": "model",
+            "message": (
+                f"模型 {config.model} 不支持图片输入，"
+                "请改用 deepseek-v4-flash-vision-exp。"
+            ),
+        }
+    try:
+        description = VisionDescriber(config, client=client).describe(
+            probe_png(), file_name="probe.png", process="自检", sub_process="探针"
+        )
+    except Exception as exc:  # noqa: BLE001 - 自检需要把任何失败原因回报给用户
+        return {"ok": False, "stage": "request", "message": str(exc), "endpoint": config.endpoint}
+    return {
+        "ok": True,
+        "stage": "done",
+        "message": "视觉模型可用。",
+        "endpoint": config.endpoint,
+        "model": config.model,
+        "summary": description.summary,
+        "warnings": list(description.warnings),
+    }
