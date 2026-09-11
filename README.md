@@ -1,6 +1,6 @@
 # Pulse — 海外社媒内容 Agent（B2B 工业铸件出海）
 
-**当前版本：V1.11.0**（接口契约 v1.1 / 媒体库契约 v1.4）
+**当前版本：V1.12.0**（接口契约 v1.1 / 媒体库契约 v1.5）
 
 为**菲美得**构建的多平台社媒内容生成与自动发布 Agent。业务基线是 B2B 工业铸件出海：
 客户为**无自有铸造厂的海外机床整机厂**（印度为主，美国 / 台湾次之），
@@ -14,15 +14,15 @@
 
 | 项 | 取值 | 真源 |
 | --- | --- | --- |
-| 产品版本 | **1.11.0** | `pyproject.toml` + `pulse.__version__` |
+| 产品版本 | **1.12.0** | `pyproject.toml` + `pulse.__version__` |
 | 接口契约版本 | **1.1**（冻结） | `pulse.shared.CONTRACT_VERSION` |
-| 媒体库契约版本 | **1.4**（冻结） | `pulse/contracts/MEDIA_LIBRARY.md` |
+| 媒体库契约版本 | **1.5**（冻结） | `pulse/contracts/MEDIA_LIBRARY.md` |
 | 版本策略 | 语义化版本 `MAJOR.MINOR.PATCH` | 见 §5 |
 | 变更记录 | 逐版本追加 | `CHANGELOG.md` |
 
 ```powershell
 & ".venv\Scripts\python.exe" -c "import pulse; print(pulse.__version__, pulse.__contract_version__)"
-# 1.11.0 1.1
+# 1.12.0 1.1
 ```
 
 ---
@@ -107,7 +107,7 @@ uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 
 ```powershell
 git tag -l --format='%(refname:short)  %(subject)'
-git show v1.11.0 --stat --no-patch
+git show v1.12.0 --stat --no-patch
 ```
 
 ### 4.3 提交消息约定
@@ -164,8 +164,8 @@ TLS 若报 `schannel: AcquireCredentialsHandle failed`，改用 OpenSSL 后端�
 3. 提交、打标签、推送：
 
    ```powershell
-   git commit -am "release: V1.11.0"
-   git tag -a v1.11.0 -m "V1.11.0 — 实拍视频识别与入库"
+   git commit -am "release: V1.12.0"
+   git tag -a v1.12.0 -m "V1.12.0 — 先查重再识别"
    git push origin main --follow-tags
 ```
 

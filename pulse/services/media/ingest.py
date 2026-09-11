@@ -122,6 +122,12 @@ class MediaIngestor:
         description_path = rag_dir / (
             f"{safe_name}.md" if is_video else f"{Path(safe_name).stem}.md"
         )
+        # 同名描述已存在时拒绝：既有素材（老图）不在登记表里，光靠内容哈希查不出来，
+        # 直接写下去会把原来那份描述覆盖掉——这是不可逆的数据损失。
+        if description_path.exists():
+            raise DuplicateMediaError(
+                f"同名描述已存在，拒绝覆盖：{description_path.name}", str(description_path)
+            )
         description_path.write_text(
             self._render_description(
                 file_name=safe_name,

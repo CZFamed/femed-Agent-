@@ -194,3 +194,23 @@ def test_unsupported_video_suffix_is_rejected(tmp_path) -> None:
         ingestor.add_media(
             file_name="movie.rmvb", process="厂区_场景", sub_process="厂房", data=b"x" * 32
         )
+
+
+def test_existing_description_is_never_overwritten(tmp_path) -> None:
+    """既有素材（老图）不在登记表里，光靠内容哈希查不出来；
+    同名描述被覆盖是不可逆的数据损失，必须拒绝。"""
+    ingestor = make_ingestor(tmp_path)
+    folder = tmp_path / "RAG知识库" / "图片描述" / "铸件" / "阀体"
+    folder.mkdir(parents=True, exist_ok=True)
+    legacy = folder / "IMG_1706.md"
+    legacy.write_text("老图原有的描述，绝不能被覆盖", encoding="utf-8")
+
+    with pytest.raises(DuplicateMediaError, match="拒绝覆盖"):
+        ingestor.add_media(
+            file_name="IMG_1706.jpg",
+            process="铸件",
+            sub_process="阀体",
+            data=JPEG + b"different-content",
+            added_at=NOW,
+        )
+    assert legacy.read_text(encoding="utf-8") == "老图原有的描述，绝不能被覆盖"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import hashlib
 import json
 import re
 import struct
@@ -1114,6 +1115,135 @@ def test_upload_video_writes_mp4_md(tmp_path, monkeypatch) -> None:
 
 def test_upload_accepts_video_files_in_the_page() -> None:
     assert "accept='image/*,video/*'" in PAGE_HTML
+
+
+# ---------- 先查重再识别（省识别费） ----------
+
+
+def _counting_describer() -> StubDescriber:
+    return StubDescriber()
+
+
+def test_describe_skips_recognition_for_registry_duplicate(tmp_path) -> None:
+    """同一份内容第二次上传，必须查重命中并**完全不调用模型**。"""
+    describer = _counting_describer()
+    app = make_app(tmp_path, describer=describer, require_vision=True)
+    data = _png_bytes()
+    first = app.upload(
+        file_name="IMG_DUP.jpg",
+        data=data,
+        process="铸件",
+        sub_process="阀体",
+        summary="阀体铸件",
+        vision_ticket=app.describe(
+            file_name="IMG_DUP.jpg", data=data, process="铸件", sub_process="阀体"
+        )["vision_ticket"],
+    )
+    assert first["ok"] is True
+    calls_after_ingest = len(describer.calls)
+
+    again = app.describe(
+        file_name="IMG_DUP_2.jpg", data=data, process="铸件", sub_process="阀体"
+    )
+    assert again["duplicate"] is True
+    assert again["vision_ticket"] == "", "重复内容不签发入库凭据"
+    assert "没有产生任何模型费用" in again["message"]
+    assert again["existing"]["file_name"] == "IMG_DUP.jpg"
+    assert len(describer.calls) == calls_after_ingest, "重复内容不得再调用模型"
+
+
+def test_describe_skips_recognition_for_existing_library_file(tmp_path) -> None:
+    """既有素材库（老图，登记表里没有记录）同样要能查出来。"""
+    describer = _counting_describer()
+    app = make_app(tmp_path, describer=describer, require_vision=True)
+    media_dir = app.media_root / "铸件" / "阀体"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    data = _png_bytes()
+    (media_dir / "IMG_OLD.jpg").write_bytes(data)
+
+    result = app.describe(
+        file_name="换个名字再传.jpg", data=data, process="铸件", sub_process="阀体"
+    )
+    assert result["duplicate"] is True, "内容相同就该认出来，跟文件名无关"
+    assert result["existing"]["where"] == "library"
+    assert result["existing"]["file_name"] == "IMG_OLD.jpg"
+    assert describer.calls == [], "命中既有素材时也不该调用模型"
+
+
+def test_describe_recognises_new_content(tmp_path) -> None:
+    describer = _counting_describer()
+    app = make_app(tmp_path, describer=describer, require_vision=True)
+    result = app.describe(
+        file_name="IMG_NEW.jpg", data=_png_bytes(), process="铸件", sub_process="阀体"
+    )
+    assert result["duplicate"] is False
+    assert result["vision_ticket"], "新内容照常识别并签发凭据"
+    assert len(describer.calls) == 1
+
+
+def test_precheck_endpoint_reports_duplicate(tmp_path) -> None:
+    app = make_app(tmp_path)
+    data = _png_bytes()
+
+    digest = hashlib.sha256(data).hexdigest()
+    fresh = app.precheck(content_hash=digest, size=len(data))
+    assert fresh == {"ok": True, "duplicate": False}
+
+    media_dir = app.media_root / "铸件" / "阀体"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    (media_dir / "IMG_P.jpg").write_bytes(data)
+    hit = app.precheck(content_hash=digest, size=len(data))
+    assert hit["duplicate"] is True
+    assert hit["existing"]["file_name"] == "IMG_P.jpg"
+    assert "零" in hit["message"] or "没有产生任何模型费用" in hit["message"]
+
+
+def test_precheck_size_filter_avoids_hashing_everything(tmp_path, monkeypatch) -> None:
+    """按字节数过滤后再算哈希：1.3 GB 素材库不该每次上传都重算。"""
+    app = make_app(tmp_path)
+    media_dir = app.media_root / "铸件" / "阀体"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    for index in range(5):
+        (media_dir / f"IMG_{index}.jpg").write_bytes(b"x" * (100 + index))
+
+    hashed: list[str] = []
+    real_sha256 = hashlib.sha256
+
+    def counting_sha256(data=b"", **kwargs):
+        if isinstance(data, (bytes, bytearray)):
+            hashed.append("x")
+        return real_sha256(data, **kwargs)
+
+    monkeypatch.setattr("pulse.console.media_console.hashlib.sha256", counting_sha256)
+    # 尺寸对不上任何文件 → 一个文件都不该被哈希（只算候选本身那一次）
+    app.precheck(content_hash="a" * 64, size=999999)
+    assert len(hashed) == 0, "尺寸不匹配时不该读取并哈希任何库内文件"
+    # 尺寸刚好对上 1 个 → 只哈希那 1 个
+    app.precheck(content_hash="a" * 64, size=101)
+    assert len(hashed) == 1, "同尺寸的才需要算哈希"
+
+
+def test_video_duplicate_also_skips_recognition(tmp_path) -> None:
+    """视频更贵（一次约 3,000 token），重复的更不能送去识别。"""
+    app = make_app(tmp_path, describer=_counting_describer(), require_vision=True)
+    media_dir = app.media_root / "生产流程" / "发泡"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    data = SAMPLE_VIDEO.read_bytes()
+    (media_dir / "clip.mp4").write_bytes(data)
+
+    result = app.describe(
+        file_name="clip.mp4", data=data, process="生产流程", sub_process="发泡"
+    )
+    assert result["duplicate"] is True
+    assert result["vision_ticket"] == ""
+    assert "clip.mp4" in result["message"]
+
+
+def test_page_ships_precheck_ui() -> None:
+    assert "/api/precheck" in PAGE_HTML
+    assert "sha256Hex" in PAGE_HTML
+    assert "markDuplicate" in PAGE_HTML
+    assert "crypto.subtle.digest('SHA-256'" in PAGE_HTML
 
 
 @pytest.fixture()

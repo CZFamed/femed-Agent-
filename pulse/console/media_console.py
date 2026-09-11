@@ -309,18 +309,43 @@ PAGE_HTML = (
     "document.getElementById('describe-status').textContent="
     "'选择图片后会自动识别并生成描述，不需要手填。';"
     "setGate(false,'请先选择图片，识别成功后按钮才会变亮。',false);refresh();}});});"
+    # 先查重再识别：重复素材在浏览器里就能算出来，连上传都省掉，更不会产生模型费用
+    "function sha256Hex(file){"
+    "if(!window.crypto||!crypto.subtle||!file.arrayBuffer){return Promise.resolve('');}"
+    "return file.arrayBuffer()"
+    ".then(function(buf){return crypto.subtle.digest('SHA-256',buf);})"
+    ".then(function(hash){var bytes=new Uint8Array(hash);var out='';"
+    "for(var i=0;i<bytes.length;i++){out+=('00'+bytes[i].toString(16)).slice(-2);}return out;})"
+    ".catch(function(){return '';});}"
+    "function markDuplicate(message){"
+    "document.getElementById('describe-box').style.display='none';"
+    "document.getElementById('describe-status').textContent="
+    "'已跳过识别（内容重复，不产生模型费用），换一张再试。';"
+    "setGate(false,message,true);}"
     "function describeFile(){var f=document.getElementById('upload');"
     "var file=f.querySelector('input[name=file]').files[0];"
     "document.getElementById('vision-ticket').value='';"
     "document.getElementById('upload-msg').textContent='';"
     "if(!file){document.getElementById('describe-box').style.display='none';"
     "setGate(false,'请先选择图片，识别成功后按钮才会变亮。',false);return;}"
-    "setGate(false,'正在识别图片…识别完成前不能入库。',false);"
+    "setGate(false,'正在校验是否重复…',false);"
+    "document.getElementById('describe-status').textContent="
+    "'先做内容查重：重复的素材不必再花钱识别。';"
+    "sha256Hex(file).then(function(hash){"
+    "if(!hash){return false;}"
+    "return fetch('/api/precheck',{method:'POST',headers:{'Content-Type':'application/json'},"
+    "body:JSON.stringify({hash:hash,size:file.size})})"
+    ".then(function(r){return r.json();}).then(function(d){"
+    "if(d&&d.duplicate){markDuplicate(d.message);return true;}return false;});"
+    "}).then(function(handled){if(!handled){runDescribe(file);}})"
+    ".catch(function(){runDescribe(file);});}"
+    "function runDescribe(file){var f=document.getElementById('upload');"
+    "setGate(false,'正在识别…识别完成前不能入库。',false);"
     "var fd=new FormData();fd.append('file',file);"
-    "fd.append('process',chosenProcess());"
-    "fd.append('sub_process',chosenSub());"
-    "document.getElementById('describe-status').textContent='正在识别图片并生成描述，请稍等…';"
+    "fd.append('process',chosenProcess());fd.append('sub_process',chosenSub());"
+    "document.getElementById('describe-status').textContent='正在识别并生成描述，请稍等…';"
     "fetch('/api/describe',{method:'POST',body:fd}).then(function(r){return r.json();}).then(function(d){"
+    "if(d.duplicate){markDuplicate(d.message);return;}"
     "if(!d.ok){document.getElementById('describe-status').textContent='自动生成失败：'+d.error;"
     "setGate(false,'视觉识别失败，无法入库。',true);return;}"
     "document.getElementById('describe-box').style.display='block';"
@@ -730,6 +755,30 @@ class MediaConsoleApp:
         video = is_video_name(file_name)
         frames: list[bytes] = []
         video_note = ""
+        # 先查重再识别：重复内容在入库时也会被拒，但那时识别费已经花掉了。
+        # 这条检查不调用模型，因此命中时零成本。
+        duplicate = self.find_duplicate(
+            content_hash=hashlib.sha256(data).hexdigest(), size=len(data)
+        )
+        if duplicate is not None:
+            return {
+                "ok": True,
+                "duplicate": True,
+                "existing": duplicate,
+                "message": _duplicate_message(duplicate),
+                "summary": "",
+                "details": "",
+                "keywords": [],
+                "source": "duplicate",
+                "warnings": (),
+                "process": "",
+                "sub_process": "",
+                "category_source": "none",
+                "vision_required": self.require_vision,
+                "vision_error": "",
+                "vision_usage": "",
+                "vision_ticket": "",
+            }
         try:
             if video:
                 frames, info = extract_frames_from_bytes(
@@ -816,6 +865,7 @@ class MediaConsoleApp:
             "sub_process": resolved_sub,
             "category_source": category_source,
             "vision_required": self.require_vision,
+            "duplicate": False,
             # 视觉识别失败时把**真实原因**带出去：只报"请检查 .env"会把人带偏
             "vision_error": vision_error,
             # 本次识别用掉多少 token（含思考），让成本可见
@@ -931,6 +981,67 @@ class MediaConsoleApp:
         }
 
     # ---------- 预览与短文 ----------
+    def find_duplicate(self, *, content_hash: str, size: int | None = None) -> dict[str, Any] | None:
+        """查这份内容是否已经在库里（登记表 + 既有素材目录）。
+
+        **先查重再识别**：重复文件本来会在入库时才被拒，但那时识别费已经花掉了。
+        为了不每次都把 1.3 GB 素材库重算一遍哈希，先用**字节数**过滤——
+        stat 几百个文件只要几毫秒，只有尺寸相同的极少数文件才需要真算哈希，
+        因此这是"精确且几乎零成本"的查重。
+        """
+        digest = (content_hash or "").strip().lower()
+        if not digest:
+            return None
+        entry = self.registry.find_by_hash(digest)
+        if entry:
+            return {
+                "where": "registry",
+                "asset_id": str(entry.get("asset_id") or ""),
+                "file_name": str(entry.get("file_name") or ""),
+                "category": "/".join(
+                    part
+                    for part in (str(entry.get("process") or ""), str(entry.get("sub_process") or ""))
+                    if part
+                ),
+                "path": str(entry.get("source_path") or ""),
+            }
+        root = self.media_root
+        if not root.is_dir():
+            return None
+        for path in _iter_media_files(root):
+            try:
+                if size is not None and path.stat().st_size != size:
+                    continue
+                if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+                    continue
+            except OSError:
+                continue
+            try:
+                relative = path.relative_to(root)
+            except ValueError:
+                relative = path
+            parts = relative.parts
+            return {
+                "where": "library",
+                "asset_id": "",
+                "file_name": path.name,
+                "category": "/".join(parts[:-1]),
+                "path": str(path),
+            }
+        return None
+
+    def precheck(self, *, content_hash: str, size: int | None = None) -> dict[str, Any]:
+        """给页面用的"上传前查重"：命中就不必上传、更不必识别。"""
+        found = self.find_duplicate(content_hash=content_hash, size=size)
+        if found is None:
+            return {"ok": True, "duplicate": False}
+        return {
+            "ok": True,
+            "duplicate": True,
+            "existing": found,
+            "message": _duplicate_message(found),
+        }
+
     def asset_by_id(self, asset_id: str) -> MediaAsset | None:
         target = (asset_id or "").strip()
         if not target:
@@ -1089,6 +1200,33 @@ class MediaConsoleApp:
         return {"ok": True, **payload}
 
 
+#: 查重时遍历的素材后缀（与入库白名单一致）
+_MEDIA_SUFFIXES = frozenset(
+    {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".mp4", ".mov", ".avi", ".mkv", ".webm"}
+)
+
+
+def _iter_media_files(root: Path):
+    """遍历素材目录里的媒体文件（跳过隐藏目录与导出目录）。"""
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix.lower() not in _MEDIA_SUFFIXES:
+            continue
+        if any(part.startswith((".", "_")) for part in path.relative_to(root).parts[:-1]):
+            continue
+        yield path
+
+
+def _duplicate_message(found: dict[str, Any]) -> str:
+    """把"这份内容已经在库里"说清楚，并说明为什么没花钱去识别。"""
+    name = found.get("file_name") or "（未知文件）"
+    category = found.get("category") or "（未知品类）"
+    where = "已入库的素材" if found.get("where") == "registry" else "既有素材库"
+    return (
+        f"这份内容已经存在于{where}：{name}（{category}）。"
+        "已跳过识别，没有产生任何模型费用。"
+    )
+
+
 def _content_type_for(path: Path) -> str:
     suffix = path.suffix.lower()
     return {
@@ -1218,6 +1356,15 @@ class _Handler(BaseHTTPRequestHandler):
                 )
             elif path == "/api/vision-check":
                 self._send_json(self.app.vision_check())
+            elif path == "/api/precheck":
+                payload = json.loads(body or b"{}")
+                size = payload.get("size")
+                self._send_json(
+                    self.app.precheck(
+                        content_hash=str(payload.get("hash", "")),
+                        size=int(size) if size else None,
+                    )
+                )
             else:
                 self._send_json({"ok": False, "error": "not found"}, status=404)
         except (UnsupportedMediaError, DuplicateMediaError) as exc:
