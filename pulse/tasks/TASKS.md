@@ -32,7 +32,7 @@ W1 全部交付后 → 进入 W2（A4 合规 / A5 平台前端 / A6 验证）。
 | W0-4 | 目录骨架与 shared 类型 | Root | **DONE** | `pulse/shared/`（4 文件，导入与契约版本校验通过） |
 | W0-6 | 子 Agent 任务书（分工落地到可验收粒度） | Root | **DONE** | 协同方案 §9 |
 | W0-7 | 根级共享文件归属 + pytest 收集口径 | Root | **DONE** | `pyproject.toml` `testpaths=["pulse"]`、`pulse/services/__init__.py` |
-| W0-8 | 共享契约基线测试常驻化 | Root | **DONE** | `pulse/shared/tests/test_contract_baseline.py`（20 项，全绿） |
+| W0-8 | 共享契约基线测试常驻化 | Root | **DONE** | `pulse/shared/tests/test_contract_baseline.py`（**21 项**，全绿；v1.1 起为 21 项） |
 | W0-9 | 子 Agent 派工单（执行层） | Root | **DONE** | `pulse/docs/dispatch/`（README + A1–A6 六份） |
 | W0-5 | Git 仓库初始化与首次提交 | Root | **DONE** | `main` 分支；提交见文末"提交记录" |
 | W0-10 | 版本元数据统一为 **V1.0.0** | Root | **DONE** | `pyproject.toml`、`pulse/__init__.py`、`test_release_version.py` |
@@ -45,12 +45,12 @@ W1 全部交付后 → 进入 W2（A4 合规 / A5 平台前端 / A6 验证）。
 `pulse/docs/dispatch/` 讲**每个 agent 具体干什么、怎么算干完**（执行层）。
 
 - 真源优先级：`AGENTS.md` > `contracts/INTERFACES.md` > `dispatch/A*.md` > 协同方案 §9 > 本任务板。
-- 派工单含协同方案没有的**已核实事实**：素材库计数（313 个媒体文件 / 327 份描述索引）、
+- 派工单含协同方案没有的**已核实事实**：素材库计数（**318 份素材描述 + 13 份汇总索引**）、
   描述文件 `source_folder` 的路径重映射陷阱、平台接入现状表、YouTube 配额上限。
 - 交付报告模板统一为 `dispatch/README.md` §4 的**六节**（改动文件清单 / 验证方式与结果 /
   契约对齐声明 / 未决问题 / 越界声明 / 依赖请求）。
 - **本轮治理修正**：`AGENTS.md` §5.4 的"当前没有任何自动化测试"与 `dispatch/A6_verifier.md` §4
-  的"基线尚未建立"均为**过时表述**，已按 W0-8 的实际交付（20 项基线）修正。
+  的"基线尚未建立"均为**过时表述**，已按 W0-8 的实际交付（基线测试）修正。
 
 ### W0-7 说明（影响所有域的根级改动）
 
@@ -64,10 +64,10 @@ W1 全部交付后 → 进入 W2（A4 合规 / A5 平台前端 / A6 验证）。
 
 ### W0-8 说明（子 agent 必读）
 
-- 共享层基线测试落在 **`pulse/shared/tests/`**（root 自己的域），共 20 项，覆盖：枚举白名单、
+- 共享层基线测试落在 **`pulse/shared/tests/`**（root 自己的域），共 **21 项**，覆盖：枚举白名单、
   平台必填项、时区偏移、素材授权、合规硬拦截、`受理≠发布` 约束、错误分级三分法、ID 前缀与时间前缀单调性、序列化。
 - **若你的改动让 `pulse/shared/tests/` 失败，先怀疑自己的实现**，不要改 `pulse/shared/`。
-- 例外：20 项里断言的是**契约语义**而非实现细节。若你确信某条断言与 `contracts/INTERFACES.md` 冲突，
+- 例外：这些断言里断言的是**契约语义**而非实现细节。若你确信某条断言与 `contracts/INTERFACES.md` 冲突，
   消息 root 并附契约条款编号。
 - 原 `pulse/services/content/tests/test_collection_probe.py`（root 的临时收集探针）已删除，
   其职责由本测试文件接管——**不要重新创建探针**。
@@ -215,17 +215,22 @@ W1 全部交付后 → 进入 W2（A4 合规 / A5 平台前端 / A6 验证）。
 
 ---
 
-## 版本管理（V1.0.0 · 2026-09-10）
+## 版本管理（V1.8.1 · 2026-09-11）
 
-**当前版本 = V1.0.0**（`git tag` 可查）。三处版本号必须一致，由
+**当前版本 = V1.8.1**（`git tag` 可查）。三处版本号必须一致，由
 `pulse/shared/tests/test_release_version.py` 守护（5 项）：
 
 | 位置 | 当前取值 | 真源属性 |
 | --- | --- | --- |
-| `pyproject.toml` | `1.0.0` | `[project] version` |
-| `pulse/__init__.py` | `1.0.0` | `pulse.__version__` |
-| `CHANGELOG.md` | `## [1.0.0]` | 逐版本条目 |
-| 契约版本（独立于产品版本） | `1.0` | `pulse.shared.CONTRACT_VERSION` |
+| `pyproject.toml` | `1.8.1` | `[project] version` |
+| `pulse/__init__.py` | `1.8.1` | `pulse.__version__` |
+| `CHANGELOG.md` | `## [1.8.1]` | 逐版本条目 |
+| 契约版本（独立于产品版本） | `1.1` | `pulse.shared.CONTRACT_VERSION` |
+
+> **版本漂移教训（2026-09-11）**：1.4.1–1.7.1 期间只打了 git tag、
+> 没同步 `pyproject.toml` / `pulse.__version__` / `CHANGELOG.md`，导致三处停在 1.4.0
+> 而 tag 已到 v1.7.1。守护测试只比对这三处、看不到 tag，所以一直没报警。
+> v1.8.0 已一次性追平。**发布时三处 + tag 必须同时改。**
 
 ### 提交记录
 
@@ -265,3 +270,13 @@ W1 全部交付后 → 进入 W2（A4 合规 / A5 平台前端 / A6 验证）。
 | 各文档中的绝对路径 | 更新 | 解释器与仓库根路径同步为 `agent\…` |
 
 **结论：仓库内容与 `v1.0.0` 标签逐字节一致**——本次整理只改路径与说明，未改任何代码。
+
+### 第二轮整理（2026-09-11 · V1.8.0）
+
+| 项 | 处理 | 说明 |
+| --- | --- | --- |
+| `Pulse海外社媒Agent开发文档_v0.2.1.docx` | 删除 | 已被 **v0.3** 完全覆盖（v0.3 在其基础上新增媒体资产库与召回策略、FR-15~FR-19）；AGENTS.md §1 文档优先级同步改指 v0.3。旧版仍可从 git 历史取回 |
+| `__pycache__` / `.pyc`（仓库内 13 处 + 素材工具目录 1 处） | 删除 | 可再生缓存 |
+| 工作区根的两张控制台预览图 | 删除 | 开发期截图，非交付物 |
+| 版本漂移 | 追平 | `pyproject.toml` / `pulse.__version__` / `CHANGELOG.md` 停在 1.4.0 而 tag 已到 v1.7.1；已统一为 1.8.0 并补写 1.4.1–1.7.1 变更记录 |
+| 版本引用对齐 | 更新 | README 头部版本、标签/发布示例、TASKS 版本管理节、AGENTS 文档清单、派工单与 `.gitignore` 中的素材计数 |

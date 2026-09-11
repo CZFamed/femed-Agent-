@@ -27,15 +27,15 @@
 
 ## 4. 你补的是一个已存在的缺口
 
-> **[2026-09-10 更新｜root]** 本节前提已变：root 已在 `pulse/shared/tests/test_contract_baseline.py`
-> 交付 **20 项**基线校验（全绿）。因此 W2-A6-1 **不再是"从零建立基线"**，而是**独立复核 + 补盲区**：
+> **[2026-09-11 更新｜root]** 本节前提已变：root 已在 `pulse/shared/tests/test_contract_baseline.py`
+> 交付 **21 项**基线校验（全绿；契约 v1.1 起为 21 项）。因此 W2-A6-1 **不再是"从零建立基线"**，而是**独立复核 + 补盲区**：
 > ① 不得照抄那份断言，必须独立编写（否则失去独立性）；② 要覆盖基线未覆盖的部分——状态机迁移表、
 > `media_processing` 轮询路径、`SemiAutoBundle` 四字段、`to_dict()` 往返、跨域字段一致性；
 > ③ 若发现基线断言本身写错 → 消息 root 并附契约条款编号，**不要改** `pulse/shared/tests/`（root 所有）。
 
 早先 `AGENTS.md` 声称"`pulse/shared/` 契约层已通过 16 项校验"，但仓库中当时并不存在测试文件，
 `pytest` 收集到 0 条用例；该表述随后又被改成"当前没有任何自动化测试"。**两种说法现在都已作废**——
-以本节开头 root 的更新与 `AGENTS.md` §5.4 为准：基线是 20 项，已交付。
+以本节开头 root 的更新与 `AGENTS.md` §5.4 为准：基线是 21 项，已交付。
 
 **因此 W2-A6-1 是补齐这项承诺的正式交付物**：契约层要有真实、可复现的校验用例，覆盖面至少包含
 `Platform` 白名单、`LicenseStatus`（禁止 `pending` 发布）、`scheduled_at` 时区偏移、平台必填 options、

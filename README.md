@@ -1,6 +1,6 @@
 # Pulse — 海外社媒内容 Agent（B2B 工业铸件出海）
 
-**当前版本：V1.0.0**
+**当前版本：V1.8.1**（接口契约 v1.1）
 
 为**菲美得**构建的多平台社媒内容生成与自动发布 Agent。业务基线是 B2B 工业铸件出海：
 客户为**无自有铸造厂的海外机床整机厂**（印度为主，美国 / 台湾次之），
@@ -14,14 +14,14 @@
 
 | 项 | 取值 | 真源 |
 | --- | --- | --- |
-| 产品版本 | **1.8.0** | `pyproject.toml` + `pulse.__version__` |
+| 产品版本 | **1.8.1** | `pyproject.toml` + `pulse.__version__` |
 | 接口契约版本 | **1.1**（冻结） | `pulse.shared.CONTRACT_VERSION` |
 | 版本策略 | 语义化版本 `MAJOR.MINOR.PATCH` | 见 §5 |
 | 变更记录 | 逐版本追加 | `CHANGELOG.md` |
 
 ```powershell
 & ".venv\Scripts\python.exe" -c "import pulse; print(pulse.__version__, pulse.__contract_version__)"
-# 1.8.0 1.1
+# 1.8.1 1.1
 ```
 
 ---
@@ -78,9 +78,9 @@ uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 | 位置 | 内容 | 是否入库 |
 | --- | --- | --- |
 | `agent/` | 代码、契约、治理文档、CI | **是**（仓库根） |
-| `agent/RAG知识库/` | 素材描述索引（327 份 `.md`），供内容域按语义选素材 | 否（体积大） |
+| `agent/RAG知识库/` | 素材描述索引（**318 份素材描述** + 13 份汇总索引，共 331 个 `.md`），供内容域按语义选素材 | 否（体积大） |
 | `agent/.venv/` | 本地 Python 解释器（唯一可用） | 否 |
-| `../菲美得产品图片/` | 实拍素材 336 个文件，产品图唯一来源 | 否（在仓库外） |
+| `../菲美得产品图片/` | 实拍素材 **342 个文件**（299 图 + 19 视频 + 说明文档），产品图唯一来源 | 否（在仓库外） |
 | `../外贸公司/` | 客群调研与业务资料 | 否（在仓库外） |
 
 > 内容域引用素材时，路径基准是**工作区**而不是仓库根：`../菲美得产品图片/…`。
@@ -96,19 +96,17 @@ uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 | 分支 | 用途 |
 | --- | --- |
 | `main` | 唯一主线，始终可发布；发布提交在此打 tag |
-| `release/1.0` | （可选）1.0 维护分支，仅供线上缺陷修复 |
+| `release/<MAJOR>.<MINOR>` | （可选）历史维护分支，仅供线上缺陷修复 |
 
 ### 4.2 标签约定
 
 发布版本使用**带注释标签**，前缀 `v`：
 
-```
-v1.0.0        # 当前版本
-```
+标签与 `pyproject.toml` 的 `version` 保持一致，形如 `v1.8.0`。
 
 ```powershell
 git tag -l --format='%(refname:short)  %(subject)'
-git show v1.0.0 --stat --no-patch
+git show v1.8.1 --stat --no-patch
 ```
 
 ### 4.3 提交消息约定
@@ -117,7 +115,7 @@ git show v1.0.0 --stat --no-patch
 
 ```
 W1: A2 发布网关域交付（80 测试通过）+ 治理补强
-release: 冻结 V1.0.0 版本元数据与变更记录
+release: V1.8.0 契约 v1.1 — VK 转正式运营
 ```
 
 ### 4.4 连接到 GitHub
@@ -151,7 +149,12 @@ TLS 若报 `schannel: AcquireCredentialsHandle failed`，改用 OpenSSL 后端�
    & ".venv\Scripts\python.exe" -m pytest -p no:cacheprovider
    ```
 
-2. 同步三处版本号：`pyproject.toml` → `pulse/__init__.py` → `CHANGELOG.md`。
+2. 同步版本号：`pyproject.toml` → `pulse/__init__.py` → `CHANGELOG.md`，
+   **并确保 git tag 与之一致**。
+
+   > 这三处由 `test_release_version.py` 守护，但该测试**看不到 git tag**。
+   > 1.4.1–1.7.1 期间正是"只打 tag、没改这三处"造成版本漂移（三处停在 1.4.0，
+   > tag 已到 v1.7.1）。发布时四处必须同时改。
 
    ```powershell
    & ".venv\Scripts\python.exe" -m pytest -p no:cacheprovider pulse/shared/tests/test_release_version.py
@@ -160,10 +163,10 @@ TLS 若报 `schannel: AcquireCredentialsHandle failed`，改用 OpenSSL 后端�
 3. 提交、打标签、推送：
 
    ```powershell
-   git commit -am "release: V1.0.0"
-   git tag -a v1.0.0 -m "V1.0.0 — 契约冻结 + 发布网关域交付"
+   git commit -am "release: V1.8.1"
+   git tag -a v1.8.1 -m "V1.8.1 — 仓库整理与版本对齐"
    git push origin main --follow-tags
-   ```
+```
 
 版本号升级口径：**契约冻结或对外行为不兼容** → 升 `MAJOR`；**向后兼容的新增** → 升 `MINOR`；
 **修缺陷** → 升 `PATCH`。
