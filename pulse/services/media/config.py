@@ -37,6 +37,14 @@ DEFAULT_TOP_K = 3
 ALLOWED_IMAGE_SUFFIXES: frozenset[str] = frozenset({".jpg", ".jpeg", ".png", ".webp", ".bmp"})
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
+#: 视频白名单与大小上限（实拍视频，模型走抽帧识别）
+ALLOWED_VIDEO_SUFFIXES: frozenset[str] = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm"})
+MAX_VIDEO_BYTES = 200 * 1024 * 1024
+
+#: 视频抽帧参数（token 实测见 video.py 模块说明）
+VIDEO_FRAME_COUNT = 4
+VIDEO_FRAME_WIDTH = 768
+
 
 @dataclass(frozen=True)
 class RecallConfig:

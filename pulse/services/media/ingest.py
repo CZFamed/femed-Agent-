@@ -25,8 +25,10 @@ from pulse.services.media.catalog import (
 )
 from pulse.services.media.config import (
     ALLOWED_IMAGE_SUFFIXES,
+    ALLOWED_VIDEO_SUFFIXES,
     BRAND_NAME,
     MAX_IMAGE_BYTES,
+    MAX_VIDEO_BYTES,
 )
 from pulse.services.media.registry import MediaRegistry
 
@@ -57,7 +59,7 @@ def _normalize_name(name: str) -> str:
 
 
 class MediaIngestor:
-    """把实拍图片加入 RAG 素材库。"""
+    """把实拍图片与实拍视频加入 RAG 素材库。"""
 
     def __init__(
         self,
@@ -75,7 +77,7 @@ class MediaIngestor:
         self.max_bytes = max_bytes
 
     # ---------- 对外入口 ----------
-    def add_image(
+    def add_media(
         self,
         *,
         file_name: str,
@@ -88,11 +90,16 @@ class MediaIngestor:
         details: str = "",
         added_at: datetime | None = None,
     ) -> MediaAsset:
-        """入库一张实拍图并返回素材记录。"""
+        """入库一份实拍素材（图片或视频）并返回素材记录。"""
         safe_name = _normalize_name(file_name)
         suffix = Path(safe_name).suffix.lower()
-        if suffix not in ALLOWED_IMAGE_SUFFIXES:
-            raise UnsupportedMediaError(f"不支持的图片格式：{suffix or '未知'}")
+        is_video = suffix in ALLOWED_VIDEO_SUFFIXES
+        if not is_video and suffix not in ALLOWED_IMAGE_SUFFIXES:
+            raise UnsupportedMediaError(
+                f"不支持的素材格式：{suffix or '未知'}"
+                f"（图片支持 {'/'.join(sorted(ALLOWED_IMAGE_SUFFIXES))}，"
+                f"视频支持 {'/'.join(sorted(ALLOWED_VIDEO_SUFFIXES))}）"
+            )
         # sub_process 可以为空：库里"人员"这类品类本来就没有子目录
         if not process:
             raise UnsupportedMediaError("必须指定 process（品类）")
@@ -111,7 +118,10 @@ class MediaIngestor:
 
         target_image = media_dir / safe_name
         target_image.write_bytes(payload)
-        description_path = rag_dir / f"{Path(safe_name).stem}.md"
+        # 视频描述的命名沿用库里既有约定：<文件名带扩展>.md（如 1.mp4.md）
+        description_path = rag_dir / (
+            f"{safe_name}.md" if is_video else f"{Path(safe_name).stem}.md"
+        )
         description_path.write_text(
             self._render_description(
                 file_name=safe_name,
@@ -121,6 +131,7 @@ class MediaIngestor:
                 keywords=keywords,
                 summary=summary,
                 details=details,
+                content_type="视频描述" if is_video else "图片描述",
                 added_at=stamp,
             ),
             encoding="utf-8",
@@ -153,6 +164,10 @@ class MediaIngestor:
             brand=self.brand,
         )
 
+    def add_image(self, **kwargs: Any) -> MediaAsset:
+        """兼容旧调用名：内部就是 ``add_media``（图片与视频同一入口）。"""
+        return self.add_media(**kwargs)
+
     # ---------- 内部实现 ----------
     def _read_payload(self, data: bytes | None, source_path: str | Path | None) -> bytes:
         if data is not None:
@@ -178,6 +193,7 @@ class MediaIngestor:
         summary: str,
         details: str,
         added_at: datetime,
+        content_type: str = "图片描述",
     ) -> str:
         keyword_text = ", ".join(f'"{item}"' for item in keywords)
         heading = summary or f"{file_name} 实拍素材"
@@ -188,7 +204,7 @@ class MediaIngestor:
             f'source_path: "{image_path.as_posix()}"\n'
             f'process: "{process}"\n'
             f'sub_process: "{sub_process}"\n'
-            'content_type: "图片描述"\n'
+            f'content_type: "{content_type}"\n'
             f"keywords: [{keyword_text}]\n"
             f'added_at: "{_iso(added_at)}"\n'
             f'brand: "{self.brand}"\n'

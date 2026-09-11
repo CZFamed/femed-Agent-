@@ -1,6 +1,6 @@
 [project]
 name = "pulse"
-version = "1.10.3"
+version = "1.11.0"
 description = "Pulse 海外社媒内容 Agent（B2B 工业铸件出海）"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -9,6 +9,9 @@ dependencies = [
     "celery>=5.4",
     "redis>=5.0",
     "httpx>=0.27",
+    # 视频抽帧：自带静态 ffmpeg 二进制。视觉接口不支持视频输入，
+    # 只能先抽成静帧再送模型（见 pulse/services/media/video.py）
+    "imageio-ffmpeg>=0.5",
 ]
 
 [project.optional-dependencies]

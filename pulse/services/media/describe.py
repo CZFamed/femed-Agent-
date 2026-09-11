@@ -48,6 +48,13 @@ SYSTEM_PROMPT = (
     "keywords（3-8 个中文关键词数组）。"
 )
 
+#: 视频抽帧后的额外说明：让模型知道这几张图是"一段连续画面"，不是几张独立照片
+VIDEO_PROMPT_NOTE = (
+    "\n这次给你的是**同一段视频**按时间顺序抽出的若干张画面，不是几张互不相关的照片。"
+    "请把它们当成一段连续画面来写：说清拍的是什么对象、处在哪个工序或场景、"
+    "画面里有谁在做什么动作。如果各帧看不出明显变化，就说明这是同一场景的连续拍摄。"
+)
+
 #: 让模型顺带判定品类；具体清单在运行时拼进去
 CATEGORY_PROMPT_SUFFIX = (
     "\nJSON 里还要有 process 与 sub_process 两个字段，记录该素材的品类。"
@@ -57,11 +64,12 @@ CATEGORY_PROMPT_SUFFIX = (
 )
 
 
-def build_system_prompt(catalog: CategoryCatalog | None = None) -> str:
-    """拼出系统提示词；没有品类目录时就是基础提示词。"""
-    if not catalog:
-        return SYSTEM_PROMPT
-    return SYSTEM_PROMPT + CATEGORY_PROMPT_SUFFIX.format(catalog=catalog.prompt_text())
+def build_system_prompt(catalog: CategoryCatalog | None = None, *, video: bool = False) -> str:
+    """拼出系统提示词；没有品类目录、也不是视频时，就是基础提示词。"""
+    prompt = SYSTEM_PROMPT + (VIDEO_PROMPT_NOTE if video else "")
+    if catalog:
+        prompt += CATEGORY_PROMPT_SUFFIX.format(catalog=catalog.prompt_text())
+    return prompt
 
 #: 画面不可见、但常被模型"猜"出来的参数类表述
 _CLAIM_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -245,6 +253,10 @@ class VisionConfig:
     max_output_tokens: int = 4000
     #: 短文比描述长得多，且模型会先"思考"占掉大量输出预算，所以单独放宽
     caption_max_tokens: int = 8000
+    #: 视频抽几帧、抽多宽。实测 4 帧 @768px 的输入 token（1,184）
+    #: 与一张原图（1,170）基本持平；1280px 会涨到 3,008。
+    video_frames: int = 4
+    video_frame_width: int = 768
 
     @property
     def enabled(self) -> bool:
@@ -405,6 +417,16 @@ def vision_config_from_env(root: Path | None = None) -> VisionConfig:
         caption_tokens = int(raw_caption_tokens)
     except ValueError:
         caption_tokens = 8000
+    raw_frames = pick("PULSE_VIDEO_FRAMES", "4")
+    try:
+        video_frames = max(1, int(raw_frames))
+    except ValueError:
+        video_frames = 4
+    raw_frame_width = pick("PULSE_VIDEO_FRAME_WIDTH", "768")
+    try:
+        frame_width = max(64, int(raw_frame_width))
+    except ValueError:
+        frame_width = 768
     return VisionConfig(
         base_url=pick("PULSE_VISION_BASE_URL", "https://opencode.ai/zen/go/v1").rstrip("/"),
         api_key=pick("PULSE_VISION_API_KEY", ""),
@@ -414,6 +436,8 @@ def vision_config_from_env(root: Path | None = None) -> VisionConfig:
         session=pick("PULSE_VISION_SESSION", "pulse-media-library"),
         max_output_tokens=max_tokens,
         caption_max_tokens=caption_tokens,
+        video_frames=video_frames,
+        video_frame_width=frame_width,
     )
 
 
@@ -427,6 +451,17 @@ def _mime_of(file_name: str) -> str:
         ".bmp": "image/bmp",
         ".gif": "image/gif",
     }.get(suffix, "image/jpeg")
+
+
+def _to_chat_content(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把统一的 content 片段转成 Chat Completions 形态。"""
+    converted: list[dict[str, Any]] = []
+    for part in content:
+        if part.get("type") == "input_text":
+            converted.append({"type": "text", "text": part.get("text", "")})
+        elif part.get("type") == "input_image":
+            converted.append({"type": "image_url", "image_url": {"url": part.get("image_url", "")}})
+    return converted
 
 
 def post_json(
@@ -502,6 +537,8 @@ class VisionDescriber:
         self._client = client
         #: 既有品类清单：让模型从库里真实存在的品类中选，而不是自己编
         self.catalog = catalog or CategoryCatalog()
+        #: 最近一次调用的 token 用量（含重试后的那次），供控制台显示成本
+        self.last_usage: dict[str, Any] = {}
 
     def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
         return post_json(self.config, payload, client=self._client)
@@ -510,21 +547,49 @@ class VisionDescriber:
         prompt = (
             f"品类：{process}/{sub_process}；源文件：{file_name}。请按系统提示输出 JSON。"
         )
+        content = [
+            {"type": "input_text", "text": prompt},
+            {"type": "input_image", "image_url": data_url},
+        ]
+        return self._compose_payload(content, video=False)
+
+    def _build_frames_payload(
+        self,
+        frames: list[bytes],
+        *,
+        file_name: str,
+        process: str,
+        sub_process: str,
+        duration_s: float = 0.0,
+        size_text: str = "",
+    ) -> dict[str, Any]:
+        """把一段视频抽出的多张静帧拼成一次多图请求。"""
+        head = f"以下 {len(frames)} 张画面来自同一段视频，按时间顺序抽出"
+        if duration_s > 0:
+            head += f"（时长约 {duration_s:.1f} 秒）"
+        if size_text:
+            head += f"（原始分辨率 {size_text}）"
+        prompt = (
+            head
+            + f"。品类：{process}/{sub_process}；源文件：{file_name}。请按系统提示输出 JSON。"
+        )
+        content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
+        for frame in frames:
+            encoded = base64.b64encode(frame).decode("ascii")
+            content.append(
+                {"type": "input_image", "image_url": f"data:image/jpeg;base64,{encoded}"}
+            )
+        return self._compose_payload(content, video=True)
+
+    def _compose_payload(self, content: list[dict[str, Any]], *, video: bool) -> dict[str, Any]:
+        """把统一的 content 片段拼成对应 API 形态的载荷。"""
         limit = self.config.max_output_tokens
-        instructions = build_system_prompt(self.catalog)
+        instructions = build_system_prompt(self.catalog, video=video)
         if self.config.api_style == "responses":
             payload: dict[str, Any] = {
                 "model": self.config.model,
                 "instructions": instructions,
-                "input": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": prompt},
-                            {"type": "input_image", "image_url": data_url},
-                        ],
-                    }
-                ],
+                "input": [{"role": "user", "content": content}],
             }
             if limit > 0:
                 payload["max_output_tokens"] = limit
@@ -535,13 +600,7 @@ class VisionDescriber:
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": instructions},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                    ],
-                },
+                {"role": "user", "content": _to_chat_content(content)},
             ],
         }
         if limit > 0:
@@ -581,17 +640,76 @@ class VisionDescriber:
             process=process,
             sub_process=sub_process,
         )
+        # 思考把预算吃光时会自动放大预算重试，而不是直接退回基础描述
+        body = self._post_with_budget_retry(payload)
+        parsed = _loads_json_object(self._extract_text(body, self.config.api_style))
+        return self._finish(parsed, process=process, sub_process=sub_process)
+
+    def describe_frames(
+        self,
+        frames: list[bytes],
+        *,
+        file_name: str,
+        process: str,
+        sub_process: str,
+        duration_s: float = 0.0,
+        size_text: str = "",
+    ) -> Description:
+        """把同一段视频抽出的多张静帧当"一段连续画面"来写描述。
+
+        接口不支持视频输入（实测 `input_video` 被拒），所以走抽帧 + 多图这条路。
+        """
+        if not vision_model_supports_images(self.config.model):
+            raise TextOnlyModelError(
+                f"模型 {self.config.model} 不能识图（只有文本能力，或需在中国区单独开通）。"
+                f"请改用 {RECOMMENDED_VISION_MODEL}（备选 {FALLBACK_VISION_MODEL}）。"
+            )
+        if not frames:
+            raise ValueError("没有可识别的视频帧")
+        payload = self._build_frames_payload(
+            frames,
+            file_name=file_name,
+            process=process,
+            sub_process=sub_process,
+            duration_s=duration_s,
+            size_text=size_text,
+        )
+        body = self._post_with_budget_retry(payload)
+        parsed = _loads_json_object(self._extract_text(body, self.config.api_style))
+        return self._finish(parsed, process=process, sub_process=sub_process)
+
+    def _post_with_budget_retry(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """发请求；若输出被思考吃光就放大预算重试一次。"""
         body = self._post(payload)
+        self.last_usage = dict(body.get("usage") or {})
         try:
             check_response_complete(body)
         except OutputTruncatedError:
-            # 思考把预算吃光了：放大预算再来一次，而不是直接退回基础描述
             limit = int(payload.get("max_output_tokens") or self.config.max_output_tokens or 0)
-            retry_payload = {**payload}
-            retry_payload["max_output_tokens"] = escalated_budget(limit)
+            retry_payload = {**payload, "max_output_tokens": escalated_budget(limit)}
             body = self._post(retry_payload)
+            self.last_usage = dict(body.get("usage") or {})
             check_response_complete(body)
-        parsed = _loads_json_object(self._extract_text(body, self.config.api_style))
+        return body
+
+    def usage_text(self) -> str:
+        """把 token 用量说成人话（含思考 token）。"""
+        usage = self.last_usage or {}
+        if not usage:
+            return ""
+        details = usage.get("output_tokens_details") or {}
+        parts = [
+            f"输入 {usage.get('input_tokens', 0)}",
+            f"输出 {usage.get('output_tokens', 0)}",
+        ]
+        if details.get("reasoning_tokens"):
+            parts.append(f"其中思考 {details['reasoning_tokens']}")
+        if usage.get("total_tokens"):
+            parts.append(f"合计 {usage['total_tokens']}")
+        return " token，".join(parts) + " token"
+
+    def _finish(self, parsed: dict[str, Any], *, process: str, sub_process: str) -> Description:
+        """两种入口（单图 / 视频多帧）共用的解析与校验。"""
         summary = str(parsed.get("summary") or "").strip()
         details = str(parsed.get("details") or "").strip()
         raw_keywords = parsed.get("keywords") or []

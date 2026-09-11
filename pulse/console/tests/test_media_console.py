@@ -67,7 +67,13 @@ class StubDescriber:
 
 def _seed_categories(root) -> None:
     """预置几种既有品类，模拟真实 RAG 库的目录形态。"""
-    for folder in ("铸件/阀体", "铸件/箱体_支座", "加工件/机床件", "人员"):
+    for folder in (
+        "铸件/阀体",
+        "铸件/箱体_支座",
+        "加工件/机床件",
+        "生产流程/发泡",
+        "人员",
+    ):
         (root / folder).mkdir(parents=True, exist_ok=True)
 
 
@@ -943,6 +949,171 @@ def test_page_ships_vision_check_button(tmp_path) -> None:
     assert "/api/vision-check" in PAGE_HTML
     assert "vision_error" in PAGE_HTML, "失败提示要带上真实原因"
     assert "视觉模型自检" in PAGE_HTML
+
+
+# ---------- 视频识别：抽帧后当多图送模型 ----------
+
+
+SAMPLE_VIDEO = (
+    Path(__file__).resolve().parents[3]
+    / "pulse"
+    / "services"
+    / "media"
+    / "tests"
+    / "assets"
+    / "sample.mp4"
+)
+
+
+def _frames_capture_client(captured: dict, text: str) -> httpx.Client:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        captured["payload"] = payload
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": text}],
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 1569,
+                    "output_tokens": 1481,
+                    "total_tokens": 3050,
+                    "output_tokens_details": {"reasoning_tokens": 1190},
+                },
+            },
+        )
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def _video_description() -> str:
+    return json.dumps(
+        {
+            "summary": "车间内流水线的连续画面",
+            "details": "同一段视频的连续几帧，镜头自左向右平移拍摄车间流水线。",
+            "keywords": ["车间", "流水线", "连续拍摄"],
+            "process": "生产流程",
+            "sub_process": "发泡",
+        },
+        ensure_ascii=False,
+    )
+
+
+def test_describe_video_sends_extracted_frames(tmp_path, monkeypatch) -> None:
+    """视频不能直接送接口（input_video 被拒），必须抽帧后当多图送过去。"""
+    monkeypatch.setenv("PULSE_VISION_API_KEY", "test-key")
+    _seed_categories(tmp_path / "RAG知识库" / "图片描述")
+    captured: dict = {}
+    app = MediaConsoleApp(
+        rag_root=tmp_path / "RAG知识库" / "图片描述",
+        media_root=tmp_path / "菲美得产品图片",
+        ledger_path=tmp_path / "ledger.sqlite3",
+        describer=StubDescriber(),
+        require_vision=True,
+        caption_client=_frames_capture_client(captured, _video_description()),
+        env_root=tmp_path,
+    )
+    data = SAMPLE_VIDEO.read_bytes()
+    result = app.describe(
+        file_name="sample.mp4", data=data, process="生产流程", sub_process="发泡"
+    )
+    assert result["source"] == "vision"
+    assert result["vision_ticket"], "视频识别成功同样要签发入库凭据"
+    assert result["process"] == "生产流程"
+
+    parts = captured["payload"]["input"][0]["content"]
+    images = [part for part in parts if part.get("type") == "input_image"]
+    assert len(images) == app.vision_config.video_frames, "应当送抽出的多张静帧"
+    assert all(
+        part["image_url"].startswith("data:image/jpeg;base64,") for part in images
+    ), "送出去的必须是 JPEG 帧，不能是视频字节"
+    assert "同一段视频" in parts[0]["text"], "要告诉模型这些帧来自同一段视频"
+    assert "同一段视频" in captured["payload"]["instructions"]
+
+
+def test_describe_video_reports_token_usage(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PULSE_VISION_API_KEY", "test-key")
+    _seed_categories(tmp_path / "RAG知识库" / "图片描述")
+    app = MediaConsoleApp(
+        rag_root=tmp_path / "RAG知识库" / "图片描述",
+        media_root=tmp_path / "菲美得产品图片",
+        ledger_path=tmp_path / "ledger.sqlite3",
+        describer=StubDescriber(),
+        require_vision=True,
+        caption_client=_frames_capture_client({}, _video_description()),
+        env_root=tmp_path,
+    )
+    result = app.describe(
+        file_name="sample.mp4", data=SAMPLE_VIDEO.read_bytes(), process="生产流程",
+        sub_process="发泡",
+    )
+    usage = result["vision_usage"]
+    assert "输入 1569" in usage and "其中思考 1190" in usage, "成本要可见"
+
+
+def test_describe_video_falls_back_when_frames_fail(tmp_path, monkeypatch) -> None:
+    """抽帧失败（比如文件损坏）不能崩，退回基础描述并把原因说清楚。"""
+    monkeypatch.setenv("PULSE_VISION_API_KEY", "test-key")
+    _seed_categories(tmp_path / "RAG知识库" / "图片描述")
+    app = MediaConsoleApp(
+        rag_root=tmp_path / "RAG知识库" / "图片描述",
+        media_root=tmp_path / "菲美得产品图片",
+        ledger_path=tmp_path / "ledger.sqlite3",
+        describer=StubDescriber(),
+        require_vision=True,
+        env_root=tmp_path,
+    )
+    result = app.describe(
+        file_name="broken.mp4", data=b"definitely not a video", process="生产流程",
+        sub_process="发泡",
+    )
+    assert result["source"] == "heuristic"
+    assert result["vision_ticket"] == ""
+    assert result["vision_error"], "抽帧失败的原因要带出来"
+
+
+def test_upload_video_writes_mp4_md(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("PULSE_VISION_API_KEY", "test-key")
+    _seed_categories(tmp_path / "RAG知识库" / "图片描述")
+    app = MediaConsoleApp(
+        rag_root=tmp_path / "RAG知识库" / "图片描述",
+        media_root=tmp_path / "菲美得产品图片",
+        ledger_path=tmp_path / "ledger.sqlite3",
+        describer=StubDescriber(),
+        require_vision=True,
+        caption_client=_frames_capture_client({}, _video_description()),
+        env_root=tmp_path,
+    )
+    data = SAMPLE_VIDEO.read_bytes()
+    described = app.describe(
+        file_name="sample.mp4", data=data, process="生产流程", sub_process="发泡"
+    )
+    stored = app.upload(
+        file_name="sample.mp4",
+        data=data,
+        process="生产流程",
+        sub_process="发泡",
+        summary=described["summary"],
+        keywords=tuple(described["keywords"]),
+        vision_ticket=described["vision_ticket"],
+    )
+    assert stored["ok"] is True
+    description = (
+        app.rag_root / "生产流程" / "发泡" / "sample.mp4.md"
+    )
+    assert description.is_file()
+    assert 'content_type: "视频描述"' in description.read_text(encoding="utf-8")
+    state = app.state()
+    assert state["capacity"]["videos"] == 1
+    assert state["capacity"]["total"] == 0, "视频不占图片容量"
+
+
+def test_upload_accepts_video_files_in_the_page() -> None:
+    assert "accept='image/*,video/*'" in PAGE_HTML
 
 
 @pytest.fixture()

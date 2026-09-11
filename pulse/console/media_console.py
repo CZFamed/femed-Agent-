@@ -4,7 +4,7 @@
 
 - ``GET  /``             素材库页面（上传、容量预警、冷却状态）
 - ``GET  /api/state``    素材清单 + 容量报告
-- ``POST /api/assets``   上传实拍图入库（multipart/form-data，需视觉识别凭据）
+- ``POST /api/assets``   上传实拍素材入库（图片/视频，multipart/form-data，需视觉识别凭据）
 - ``POST /api/describe`` 选图后自动生成描述（摘要 / 细节 / 关键词），
   识别成功时同时签发"入库许可"凭据
 - ``POST /api/usage``    标记素材已进入内容 / 发布（触发 15 天冷却）
@@ -44,6 +44,7 @@ from pulse.services.media.config import (
     RecallConfig,
 )
 from pulse.services.media.describe import build_describer, heuristic_describe, read_env_file
+from pulse.services.media.describe import VisionDescriber
 from pulse.services.media.captions import (
     CAPTION_SPECS,
     caption_spec,
@@ -51,6 +52,7 @@ from pulse.services.media.captions import (
 )
 from pulse.services.media.describe import vision_config_from_env
 from pulse.services.media.exporter import ExportEntry, export_entries
+from pulse.services.media.video import extract_frames_from_bytes, is_video_name
 from pulse.services.media.ingest import (
     DuplicateMediaError,
     MediaIngestor,
@@ -137,20 +139,21 @@ PAGE_HTML = (
     "<div id='banner' class='banner ok'>加载中…</div>"
     "<div class='cards' id='cards'></div>"
     "<section><h2>三步上手</h2><p>"
-    "第一步：在「上传实拍图入库」里选好品类，把电脑里的产品实拍图选进来；页面会自动识别画面内容。<br/>"
+    "第一步：在「上传实拍素材入库」里选好品类，把电脑里的产品实拍图或视频选进来；页面会自动识别画面内容。<br/>"
     "识别成功前，「上传并入库」按钮是<span class='muted'>灰色、点不动</span>的；"
     "识别成功后会变成蓝色，这时才能点。<br/>"
     "第二步：看最上方的横幅——绿色表示素材充足；红色表示可用图片少于 112 张（约一周用量），需要尽快补拍。<br/>"
     "第三步：某张图被内容用掉后，点它卡片上的“标记已用于内容”，这张图 15 天内不会再被选中。"
     "</p></section>"
-    "<section><h2>上传实拍图入库</h2>"
-    "<p class='muted'>入库许可：图片必须先通过视觉识别。识别没成功，按钮保持灰色，无法入库。</p>"
+    "<section><h2>上传实拍素材入库（图片 / 视频）</h2>"
+    "<p class='muted'>入库许可：素材必须先通过视觉识别。识别没成功，按钮保持灰色，无法入库。<br/>"
+    "视频接口本身不支持视频输入，系统会自动抽 4 张静帧送识别（成本约等于一张原图）。</p>"
     "<div><button type='button' id='vision-check-btn' class='ghost'>视觉模型自检</button>"
     "<span class='hint' id='vision-check-result'></span></div>"
     "<form id='upload'>"
     "<div class='row'>"
     "<div class='field'><label>图片文件</label>"
-    "<input type='file' name='file' accept='image/*' required/></div>"
+    "<input type='file' name='file' accept='image/*,video/*' required/></div>"
     "<div class='field'><label>品类 process</label>"
     "<select name='process' id='process-select' required></select></div>"
     "<div class='field'><label>子类 sub_process</label>"
@@ -326,6 +329,7 @@ PAGE_HTML = (
     "f.querySelector('textarea[name=details]').value=d.details||'';"
     "var msg=d.source==='vision'?'已用视觉模型自动生成描述':"
     "'已按文件名与规格信息自动生成（未配置视觉模型，画面内容待补充）';"
+    "if(d.vision_usage){msg+='。本次消耗 '+d.vision_usage;}"
     "if(d.warnings&&d.warnings.length){msg+='。提示：'+d.warnings.join('；');}"
     "document.getElementById('describe-status').textContent=msg;"
     "if(d.process){var ps=document.getElementById('process-select');"
@@ -511,11 +515,21 @@ class MediaConsoleApp:
         self._catalog: CategoryCatalog = load_categories(self.rag_root)
         #: 视觉模型配置：描述生成与短文生成共用同一条通道
         self.vision_config = vision_config_from_env(root)
-        self.describer = describer or build_describer(
-            root, catalog=self._catalog, config=self.vision_config
-        )
-        #: 短文生成的注入点（测试用；为空则走真实 HTTP）
+        #: 注入的模型客户端（测试用；为空则走真实 HTTP），短文与视频识别共用
         self.caption_client = caption_client
+        self._vision_describer: VisionDescriber | None = None
+        if describer is None and self.vision_config.enabled:
+            self._vision_describer = VisionDescriber(
+                self.vision_config, catalog=self._catalog, client=caption_client
+            )
+        self.describer = (
+            describer
+            or (
+                self._vision_describer.describe
+                if self._vision_describer is not None
+                else build_describer(root, catalog=self._catalog, config=self.vision_config)
+            )
+        )
         #: 导出落地目录：默认放在素材库旁边的"Pulse导出"（老板容易找到）
         self.export_root = self._resolve_export_root(root) if export_root is None else Path(export_root)
         # 入库许可：默认"必须先完成视觉识别"，可用环境变量临时关闭
@@ -637,7 +651,7 @@ class MediaConsoleApp:
             keywords = tuple(generated.get("keywords") or ())
         elif self.require_vision:
             self._assert_vision_ticket(vision_ticket, data, process=process, sub_process=sub_process)
-        asset = self.ingestor.add_image(
+        asset = self.ingestor.add_media(
             file_name=file_name,
             process=process,
             sub_process=sub_process,
@@ -708,17 +722,56 @@ class MediaConsoleApp:
     ) -> dict[str, Any]:
         """自动生成素材描述：视觉模型优先，未配置或失败时退回基础信息。
 
+        图片直接送模型；**视频接口不支持**（实测 ``input_video`` 被拒），
+        所以先用 ffmpeg 抽成若干静帧、再当"一段连续画面"送过去。
+
         只有视觉识别成功（``source == "vision"``）才签发入库许可凭据。
         """
+        video = is_video_name(file_name)
+        frames: list[bytes] = []
+        video_note = ""
         try:
-            description = self.describer(
-                data, file_name=file_name, process=process, sub_process=sub_process
-            )
+            if video:
+                frames, info = extract_frames_from_bytes(
+                    data,
+                    file_name,
+                    count=self.vision_config.video_frames,
+                    width=self.vision_config.video_frame_width,
+                )
+                if info is not None:
+                    video_note = (
+                        f"视频时长约 {info.duration_s:.1f} 秒，原始分辨率 {info.size_text}，"
+                        f"已抽 {len(frames)} 帧送识别。"
+                    )
+                frames_describer = self._vision_describer or VisionDescriber(
+                    self.vision_config, catalog=self._catalog, client=self.caption_client
+                )
+                description = frames_describer.describe_frames(
+                    frames,
+                    file_name=file_name,
+                    process=process,
+                    sub_process=sub_process,
+                    duration_s=info.duration_s if info else 0.0,
+                    size_text=info.size_text if info else "",
+                )
+                vision_note = frames_describer.usage_text()
+            else:
+                description = self.describer(
+                    data, file_name=file_name, process=process, sub_process=sub_process
+                )
+                vision_note = (
+                    self._vision_describer.usage_text()
+                    if self._vision_describer is not None
+                    else ""
+                )
             vision_error = ""
         except Exception as exc:  # 网络 / 额度 / 解析失败都不应阻断入库
             description = replace(
                 heuristic_describe(
-                    data, file_name=file_name, process=process, sub_process=sub_process
+                    frames[0] if frames else data,
+                    file_name=file_name,
+                    process=process,
+                    sub_process=sub_process,
                 ),
                 warnings=(
                     f"视觉模型调用失败，已退回基础信息描述：{exc}",
@@ -726,6 +779,11 @@ class MediaConsoleApp:
                 ),
             )
             vision_error = str(exc)
+            vision_note = ""
+        if video_note:
+            description = replace(
+                description, warnings=tuple(description.warnings) + (video_note,)
+            )
         vision_ok = description.source == "vision"
         if not vision_ok and not vision_error and not self.vision_config.enabled:
             vision_error = "未配置 PULSE_VISION_API_KEY（见仓库根 .env）"
@@ -760,6 +818,8 @@ class MediaConsoleApp:
             "vision_required": self.require_vision,
             # 视觉识别失败时把**真实原因**带出去：只报"请检查 .env"会把人带偏
             "vision_error": vision_error,
+            # 本次识别用掉多少 token（含思考），让成本可见
+            "vision_usage": vision_note,
             "vision_ticket": (
                 self._issue_vision_ticket(
                     file_name=file_name, data=data, process=process, sub_process=sub_process

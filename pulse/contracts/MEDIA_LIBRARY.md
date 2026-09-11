@@ -1,6 +1,6 @@
-# 媒体资产库与召回策略契约 v1.3
+# 媒体资产库与召回策略契约 v1.4
 
-> 所有者：root　｜　冻结日期：2026-09-11　｜　最近升版：2026-09-11（v1.3）　｜　实现：`pulse/services/media/`
+> 所有者：root　｜　冻结日期：2026-09-11　｜　最近升版：2026-09-11（v1.4）　｜　实现：`pulse/services/media/`
 > 关联：`AGENTS.md` §3 铁律、`pulse/contracts/INTERFACES.md`（发布契约）
 
 本契约定义**素材入库**与**素材召回**两条链路。发布契约（INTERFACES.md）仍然有效，
@@ -52,9 +52,28 @@
 
 ### 2.5 素材来源（B5）
 
-- 入库仅接受实拍图（`.jpg/.jpeg/.png/.webp/.bmp`，默认 ≤ 20 MB）；
+- 入库仅接受**实拍**素材：图片 `.jpg/.jpeg/.png/.webp/.bmp`（≤ 20 MB，`MAX_IMAGE_BYTES`）；
+  视频 `.mp4/.mov/.avi/.mkv/.webm`（≤ 200 MB，`MAX_VIDEO_BYTES`）。
   工业件禁止文生图产品图（AGENTS.md §3.6）。
 - 同一内容哈希重复入库一律拒绝，返回 `DuplicateMediaError`。
+
+### 2.5.1 视频识别（B5.1，v1.4 新增）
+
+- **视觉接口不支持视频输入**：实测 `input_video` 会被拒绝
+  （`unknown variant input_video, expected one of input_text, o…`），
+  把视频字节塞进 `input_image` 也报 "unsupported image"。
+  因此视频一律**先用 ffmpeg 抽静帧、再当"一段连续画面的多张图"**送模型。
+- 抽帧参数：`PULSE_VIDEO_FRAMES`（默认 4）、`PULSE_VIDEO_FRAME_WIDTH`（默认 768）、
+  时间点取 10%–90% 均匀分布（避开常见黑场）。
+- ffmpeg 来源优先级：`PULSE_FFMPEG` → `imageio-ffmpeg` 自带 → PATH。
+  **依赖已随项目提供**（`imageio-ffmpeg`，自带静态 ffmpeg 二进制）。
+- **token 实测**（同一段实拍视频）：1 帧 @1280px = 791；
+  4 帧 @1280px = 3,008；**4 帧 @768px = 1,184**；6 帧 @768px = 1,750
+  （服务端按像素量折算，故缩小尺寸比减少帧数更省）。默认取 4 帧 @768px：
+  成本与一张原图（约 1,170）持平。
+- 视频描述的落盘命名沿用库里既有约定：**`<文件名带扩展>.md`**（如 `1.mp4.md`），
+  头部 `content_type: "视频描述"`；图片仍是 `<文件名去扩展>.md`。
+- 视频**不计入图片容量**（0），单独统计在 `CapacityReport.videos`。
 
 ### 2.6 入库许可（B6，v1.1 新增）
 
@@ -168,6 +187,7 @@
 
 | 版本 | 日期 | 变更 |
 | --- | --- | --- |
+| 1.4 | 2026-09-11 | B5 扩到实拍视频（新增 `MAX_VIDEO_BYTES`）；新增 B5.1 视频识别（接口不支持视频输入 → ffmpeg 抽帧 + 多图，含 token 实测、命令来源、`<文件名>.mp4.md` 命名与容量口径） |
 | 1.3 | 2026-09-11 | 新增 B12 素材包导出（位次顺序、零修饰字节复制、不覆盖、所见即所得、缺失如实报告）；控制台接口表补 `/api/export` |
 | 1.2 | 2026-09-11 | 新增 B10 素材预览（禁用 `source_path`、需防穿越、支持 Range）与 B11 按平台短文生成（规格、事实边界、外链口径、禁止静默降级）；控制台接口表补 `/api/asset-image` 与 `/api/caption` |
 | 1.1 | 2026-09-11 | 补 B6 入库许可、B7 品类判定、B8 索引文件不计入素材、B9 分平台召回；控制台接口表补 `/api/describe`、`vision_ticket` 与 `categories`/`platforms` 字段，并订正错误码（许可不足为 403） |

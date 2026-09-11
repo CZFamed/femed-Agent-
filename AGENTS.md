@@ -127,6 +127,11 @@ spawn 时使用固定任务名，便于 root 定位与升级：
 | 向量库 | 已有 RAG 描述体系（`RAG知识库/`） |
 | 凭据 | Vault / KMS |
 | 测试 | pytest |
+| 视频抽帧 | `imageio-ffmpeg`（自带静态 ffmpeg 二进制） |
+
+> **关于 `imageio-ffmpeg`**：视觉接口**不支持视频输入**（实测 `input_video` 被拒），
+> 视频必须先抽静帧再送模型；解 H.264 无法用纯 Python 完成。
+> 该依赖会使 `.venv` 增加约 84 MB，属视频识别的必要代价（见媒体库契约 §2.5.1）。
 
 ---
 

@@ -131,3 +131,66 @@ def test_rebuild_index_counts_images(tmp_path) -> None:
     text = index.read_text(encoding="utf-8")
     assert "全部 2 个媒体文件" in text
     assert "图片 2 张、视频 0 个" in text
+
+
+# ---------- 视频入库 ----------
+
+
+def test_video_is_accepted_and_named_like_the_existing_library(tmp_path) -> None:
+    """库里视频描述一律叫 `<文件名带扩展>.md`（如 1.mp4.md），新入库必须照这个约定。"""
+    ingestor = make_ingestor(tmp_path)
+    asset = ingestor.add_media(
+        file_name="pour.mp4",
+        process="生产流程",
+        sub_process="发泡",
+        data=b"\x00\x00\x00\x18ftypmp42fake-video-bytes",
+        summary="浇铸区连续画面",
+        keywords=("浇铸", "连续拍摄"),
+        added_at=NOW,
+    )
+    assert asset.is_video is True
+    assert asset.kind == "video"
+    description = tmp_path / "RAG知识库" / "图片描述" / "生产流程" / "发泡" / "pour.mp4.md"
+    assert description.is_file(), "视频描述应当是 <文件名>.mp4.md"
+    text = description.read_text(encoding="utf-8")
+    assert 'content_type: "视频描述"' in text
+    assert (tmp_path / "菲美得产品图片" / "生产流程" / "发泡" / "pour.mp4").is_file()
+
+
+def test_video_counts_in_index_and_not_in_image_capacity(tmp_path) -> None:
+    ingestor = make_ingestor(tmp_path)
+    ingestor.add_media(
+        file_name="IMG_A.jpg", process="厂区_场景", sub_process="厂房", data=JPEG, added_at=NOW
+    )
+    ingestor.add_media(
+        file_name="clip.mp4",
+        process="厂区_场景",
+        sub_process="厂房",
+        data=b"\x00\x00\x00\x18ftypmp42clip",
+        added_at=NOW,
+    )
+    index = tmp_path / "RAG知识库" / "图片描述" / "厂区_场景" / "厂房" / "00_汇总索引.md"
+    text = index.read_text(encoding="utf-8")
+    assert "全部 2 个媒体文件" in text
+    assert "图片 1 张、视频 1 个" in text
+
+
+def test_add_image_alias_still_works(tmp_path) -> None:
+    """旧调用名保留，避免历史代码与测试一起返工。"""
+    ingestor = make_ingestor(tmp_path)
+    asset = ingestor.add_image(
+        file_name="IMG_ALIAS.jpg",
+        process="厂区_场景",
+        sub_process="厂房",
+        data=JPEG,
+        added_at=NOW,
+    )
+    assert asset.file_name == "IMG_ALIAS.jpg"
+
+
+def test_unsupported_video_suffix_is_rejected(tmp_path) -> None:
+    ingestor = make_ingestor(tmp_path)
+    with pytest.raises(UnsupportedMediaError, match="不支持的素材格式"):
+        ingestor.add_media(
+            file_name="movie.rmvb", process="厂区_场景", sub_process="厂房", data=b"x" * 32
+        )

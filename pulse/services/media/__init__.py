@@ -63,6 +63,14 @@ from pulse.services.media.platforms import (
     slot_score,
 )
 from pulse.services.media.registry import MediaRegistry
+from pulse.services.media.video import (
+    VideoFramesError,
+    VideoInfo,
+    extract_frames,
+    extract_frames_from_bytes,
+    is_video_name,
+    probe_video,
+)
 
 __all__ = [
     "BRAND_NAME",
@@ -88,16 +96,21 @@ __all__ = [
     "RecallPolicy",
     "ShotSlot",
     "UnsupportedMediaError",
+    "VideoFramesError",
+    "VideoInfo",
     "VisionConfig",
     "asset_id_for",
     "build_describer",
     "caption_spec",
     "export_entries",
+    "extract_frames",
+    "extract_frames_from_bytes",
     "find_unverified_claims",
     "generate_caption",
     "heuristic_describe",
     "load_catalog",
     "load_categories",
+    "is_video_name",
     "make_export_dir",
     "match_category",
     "parse_capture_time",
@@ -106,6 +119,7 @@ __all__ = [
     "probe_png",
     "probe_image",
     "probe_vision",
+    "probe_video",
     "resolve_category",
     "slot_score",
     "vision_config_from_env",
