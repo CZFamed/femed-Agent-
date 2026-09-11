@@ -215,16 +215,16 @@ W1 全部交付后 → 进入 W2（A4 合规 / A5 平台前端 / A6 验证）。
 
 ---
 
-## 版本管理（V1.9.0 · 2026-09-11）
+## 版本管理（V1.10.0 · 2026-09-11）
 
-**当前版本 = V1.9.0**（`git tag` 可查）。三处版本号必须一致，由
+**当前版本 = V1.10.0**（`git tag` 可查）。三处版本号必须一致，由
 `pulse/shared/tests/test_release_version.py` 守护（5 项）：
 
 | 位置 | 当前取值 | 真源属性 |
 | --- | --- | --- |
-| `pyproject.toml` | `1.9.0` | `[project] version` |
-| `pulse/__init__.py` | `1.9.0` | `pulse.__version__` |
-| `CHANGELOG.md` | `## [1.9.0]` | 逐版本条目 |
+| `pyproject.toml` | `1.10.0` | `[project] version` |
+| `pulse/__init__.py` | `1.10.0` | `pulse.__version__` |
+| `CHANGELOG.md` | `## [1.10.0]` | 逐版本条目 |
 | 契约版本（独立于产品版本） | `1.1` | `pulse.shared.CONTRACT_VERSION` |
 
 > **版本漂移教训（2026-09-11）**：1.4.1–1.7.1 期间只打了 git tag、

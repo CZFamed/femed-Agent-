@@ -9,6 +9,6 @@
 __all__ = ["__version__", "__contract_version__"]
 
 # 产品版本（语义化版本）。升版时同步三处：pyproject.toml / 本文件 / CHANGELOG.md。
-__version__ = "1.9.0"
+__version__ = "1.10.0"
 
 from pulse.shared.models import CONTRACT_VERSION as __contract_version__

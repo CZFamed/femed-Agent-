@@ -6,6 +6,7 @@ import http.client
 import json
 import struct
 import threading
+from pathlib import Path
 
 import httpx
 import pytest
@@ -688,6 +689,122 @@ def test_page_ships_preview_and_caption_ui(tmp_path) -> None:
     assert "id='caption-btn'" in PAGE_HTML
     assert "id='caption-checks'" in PAGE_HTML
     assert "/api/caption" in PAGE_HTML
+
+
+# ---------- 导出 ----------
+
+
+def _export_app(tmp_path):
+    """召回一条 LinkedIn 素材并落地对应文件，"所见即所得"地测导出。"""
+    _seed_categories(tmp_path / "RAG知识库" / "图片描述")
+    app = MediaConsoleApp(
+        rag_root=tmp_path / "RAG知识库" / "图片描述",
+        media_root=tmp_path / "菲美得产品图片",
+        ledger_path=tmp_path / "ledger.sqlite3",
+        describer=StubDescriber(),
+        require_vision=False,
+        export_root=tmp_path / "Pulse导出",
+    )
+    _write_description(
+        app.rag_root, "加工件", "机床件", "IMG_BED.png",
+        ("机床床身", "导轨面", "机加工"), "大型机床床身导轨面加工",
+    )
+    media_dir = app.media_root / "加工件" / "机床件"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    (media_dir / "IMG_BED.png").write_bytes(_png_bytes())
+    return app
+
+
+def test_export_writes_package_for_recalled_slots(tmp_path) -> None:
+    app = _export_app(tmp_path)
+    recalled = app.recall(platform="linkedin", top_k=1)
+    slots = [
+        {"order": slot["order"], "role": slot["role"], "asset_id": pick["asset_id"]}
+        for slot in recalled["slots"]
+        for pick in slot["picks"]
+    ]
+    result = app.export(platform="linkedin", slots=slots)
+    assert result["ok"] is True
+    assert result["file_count"] == 1
+    directory = Path(result["directory"])
+    assert directory.is_dir()
+    assert (directory / "说明.txt").is_file()
+    copied = directory / result["copied"][0]
+    assert copied.read_bytes() == _png_bytes(), "必须是原文件字节"
+
+
+def test_export_includes_caption_file_when_given(tmp_path) -> None:
+    app = _export_app(tmp_path)
+    recalled = app.recall(platform="linkedin", top_k=1)
+    slots = [
+        {"order": slot["order"], "asset_id": pick["asset_id"]}
+        for slot in recalled["slots"]
+        for pick in slot["picks"]
+    ]
+    result = app.export(
+        platform="linkedin",
+        slots=slots,
+        caption={"platform_name": "LinkedIn", "text": "hello", "hashtags": ["#casting"]},
+    )
+    text = (Path(result["directory"]) / "文案.txt").read_text(encoding="utf-8-sig")
+    assert "hello" in text and "#casting" in text
+
+
+def test_export_rejects_empty_slots(tmp_path) -> None:
+    app = _export_app(tmp_path)
+    with pytest.raises(ValueError, match="没有可导出的素材"):
+        app.export(platform="linkedin", slots=[])
+
+
+def test_export_rejects_unknown_platform(tmp_path) -> None:
+    app = _export_app(tmp_path)
+    with pytest.raises(ValueError, match="不支持的平台"):
+        app.export(platform="weibo", slots=[{"order": 1}])
+
+
+def test_export_reports_missing_media_file(tmp_path) -> None:
+    """素材文件不在磁盘上时要如实报告，而不是静默少导一张。"""
+    app = _export_app(tmp_path)
+    recalled = app.recall(platform="linkedin", top_k=1)
+    slots = [
+        {"order": slot["order"], "asset_id": pick["asset_id"]}
+        for slot in recalled["slots"]
+        for pick in slot["picks"]
+    ]
+    (app.media_root / "加工件" / "机床件" / "IMG_BED.png").unlink()
+    result = app.export(platform="linkedin", slots=slots)
+    assert result["file_count"] == 0
+    assert result["missing"]
+
+
+def test_export_endpoint_returns_directory(live_server) -> None:
+    app, host, port = live_server
+    _write_description(
+        app.rag_root, "加工件", "机床件", "IMG_EXP.png", ("机床床身",), "可导出的床身"
+    )
+    media_dir = app.media_root / "加工件" / "机床件"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    (media_dir / "IMG_EXP.png").write_bytes(_png_bytes())
+    asset = next(a for a in app.assets() if a.file_name == "IMG_EXP.png")
+
+    conn = http.client.HTTPConnection(host, port, timeout=5)
+    body = json.dumps(
+        {"platform": "linkedin", "slots": [{"order": 1, "asset_id": asset.asset_id}]}
+    ).encode("utf-8")
+    conn.request(
+        "POST", "/api/export", body=body, headers={"Content-Type": "application/json"}
+    )
+    payload = json.loads(conn.getresponse().read().decode("utf-8"))
+    assert payload["ok"] is True
+    assert payload["file_count"] == 1
+    assert Path(payload["directory"]).is_dir()
+    conn.close()
+
+
+def test_page_ships_export_ui(tmp_path) -> None:
+    assert "id='export-btn'" in PAGE_HTML
+    assert "/api/export" in PAGE_HTML
+    assert "renderExportButton" in PAGE_HTML
 
 
 @pytest.fixture()

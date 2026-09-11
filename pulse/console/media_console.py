@@ -50,6 +50,7 @@ from pulse.services.media.captions import (
     generate_caption,
 )
 from pulse.services.media.describe import vision_config_from_env
+from pulse.services.media.exporter import ExportEntry, export_entries
 from pulse.services.media.ingest import (
     DuplicateMediaError,
     MediaIngestor,
@@ -177,6 +178,9 @@ PAGE_HTML = (
     "<button type='submit'>执行召回</button></div>"
     "</div></form>"
     "<div class='hint' id='platform-summary'></div>"
+    "<div><button type='button' id='export-btn' disabled>导出这一帖的素材</button> "
+    "<button type='button' id='export-open' style='display:none'>复制导出文件夹路径</button></div>"
+    "<div class='hint' id='export-status'>先在下面执行召回，再导出。</div>"
     "<div id='recall-result'></div>"
     "<div class='caption-box' id='caption-box' style='display:none'>"
     "<div id='caption-head'></div>"
@@ -222,6 +226,18 @@ PAGE_HTML = (
     "function chosenSub(){var s=document.getElementById('sub-process-select');return s?s.value:'';}"
     "var platforms=[];"
     "var lastRecall=null;"
+    "var lastCaption=null;"
+    "var exportSlots=[];"
+    "function renderExportButton(d){var btn=document.getElementById('export-btn');"
+    "if(!d.platform||!d.picks||!d.picks.length){btn.disabled=true;"
+    "document.getElementById('export-status').textContent='先在下面执行召回，再导出。';return;}"
+    "exportSlots=[];(d.slots||[]).forEach(function(s){"
+    "(s.picks||[]).forEach(function(p){"
+    "exportSlots.push({order:s.order,role:s.role,asset_id:p.asset_id});});});"
+    "btn.disabled=exportSlots.length===0;"
+    "document.getElementById('export-status').textContent="
+    "'共 '+exportSlots.length+' 条素材可导出（按位次顺序）。'"
+    "+(lastCaption?'点导出会连文案一起写进文件夹。':'');}"
     "function renderCaptionPanel(d){var box=document.getElementById('caption-box');"
     "if(!d.platform||!d.picks||!d.picks.length){box.style.display='none';return;}"
     "box.style.display='grid';"
@@ -342,6 +358,7 @@ PAGE_HTML = (
     "extra_note:document.getElementById('caption-note').value})})"
     ".then(function(r){return r.json();}).then(function(d){"
     "if(!d.ok){status.textContent='生成失败：'+d.error;return;}"
+    "lastCaption=d;"
     "document.getElementById('caption-text').value=d.full_text||d.text;"
     "document.getElementById('caption-checks').innerHTML=(d.checks||[]).map(function(c){"
     "return \"<li class='\"+(c.ok?'ok':'bad')+\"'>\"+(c.ok?'✓':'！')+esc(c.name)+'：'"
@@ -380,7 +397,27 @@ PAGE_HTML = (
     ":\"<p class='muted'>这一格还没有合适的素材，建议按这个位次补拍。</p>\");"
     "return \"<div class='slot'><h3>\"+esc(s.role)+\"</h3>\""
     "+(s.note?(\"<p class='muted'>\"+esc(s.note)+\"</p>\"):'')+body+'</div>';}).join('');"
-    "lastRecall=d;renderCaptionPanel(d);});});"
+    "lastRecall=d;renderCaptionPanel(d);renderExportButton(d);});});"
+    "document.getElementById('export-btn').addEventListener('click',function(){"
+    "if(!lastRecall||!lastRecall.platform||!exportSlots.length){return;}"
+    "var status=document.getElementById('export-status');"
+    "status.textContent='正在导出，请稍等…';"
+    "fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},"
+    "body:JSON.stringify({platform:lastRecall.platform.key,slots:exportSlots,"
+    "caption:lastCaption?Object.assign({},lastCaption,"
+    "{text:document.getElementById('caption-text').value,hashtags:[]}):null})})"
+    ".then(function(r){return r.json();}).then(function(d){"
+    "if(!d.ok){status.textContent='导出失败：'+d.error;return;}"
+    "status.textContent='已导出 '+d.file_count+' 个文件到：'+d.directory"
+    "+(d.missing&&d.missing.length?('（有 '+d.missing.length+' 条素材没找到文件，详见说明.txt）'):'');"
+    "status.className='hint'+(d.missing&&d.missing.length?' bad':' ok');"
+    "document.getElementById('export-open').style.display='inline-block';"
+    "document.getElementById('export-open').dataset.path=d.directory;"
+    "}).catch(function(){status.textContent='导出失败，请重试。';});});"
+    "document.getElementById('export-open').addEventListener('click',function(){"
+    "var path=this.dataset.path||'';"
+    "try{navigator.clipboard.writeText(path);}catch(e){}"
+    "document.getElementById('export-status').textContent='路径已复制：'+path;});"
     "function photoHtml(p){return \"<div class='asset'><h3>\"+esc(p.file_name)+\"</h3>\""
     "+(p.is_video"
     "?(\"<video class='thumb' controls preload='metadata' src='/api/asset-image?asset_id=\""
@@ -440,6 +477,7 @@ class MediaConsoleApp:
         env_root: str | Path | None = None,
         require_vision: bool | None = None,
         caption_client: Any | None = None,
+        export_root: str | Path | None = None,
     ) -> None:
         self.config = config or RecallConfig()
         self.rag_root = Path(rag_root)
@@ -458,6 +496,8 @@ class MediaConsoleApp:
         )
         #: 短文生成的注入点（测试用；为空则走真实 HTTP）
         self.caption_client = caption_client
+        #: 导出落地目录：默认放在素材库旁边的"Pulse导出"（老板容易找到）
+        self.export_root = self._resolve_export_root(root) if export_root is None else Path(export_root)
         # 入库许可：默认"必须先完成视觉识别"，可用环境变量临时关闭
         self.require_vision = (
             resolve_require_vision(root) if require_vision is None else require_vision
@@ -476,6 +516,15 @@ class MediaConsoleApp:
     @property
     def catalog(self) -> CategoryCatalog:
         return self._catalog
+
+    def _resolve_export_root(self, root: Path | None) -> Path:
+        """导出目录：优先 PULSE_EXPORT_DIR，否则放在素材库旁边的"Pulse导出"。"""
+        raw = os.environ.get("PULSE_EXPORT_DIR")
+        if raw is None and root is not None:
+            raw = read_env_file(Path(root) / ".env").get("PULSE_EXPORT_DIR")
+        if raw and str(raw).strip():
+            return Path(str(raw).strip())
+        return self.media_root.resolve().parent / "Pulse导出"
 
     def refresh_catalog(self) -> CategoryCatalog:
         """重新扫描品类目录（入库后调用，让下拉框跟上新目录）。"""
@@ -872,6 +921,61 @@ class MediaConsoleApp:
             **result.as_payload(),
         }
 
+    def export(
+        self,
+        *,
+        platform: str,
+        slots: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
+        caption: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """把召回结果导出成素材包（原图按位次顺序 + 说明 + 文案）。
+
+        由页面把**当前显示出来的**位次与素材原样回传，保证"所见即所得"——
+        导出时重跑一次召回会因加权随机而挑出别的图。
+        """
+        profile = platform_profile(platform)
+        spec = caption_spec(platform)
+        if profile is None or spec is None:
+            raise ValueError(f"不支持的平台：{platform!r}")
+
+        catalog = {asset.asset_id: asset for asset in self.assets()}
+        roles = {slot.order: slot for slot in profile.slots}
+        entries: list[ExportEntry] = []
+        for index, item in enumerate(slots, start=1):
+            order = int(item.get("order") or index)
+            slot = roles.get(order)
+            role = str(item.get("role") or (slot.role if slot else ""))
+            asset = catalog.get(str(item.get("asset_id") or ""))
+            entries.append(
+                ExportEntry(
+                    order=order,
+                    role=role,
+                    file_name=asset.file_name if asset else str(item.get("file_name") or "未知"),
+                    category=asset.category if asset else "",
+                    summary=asset.summary if asset else "",
+                    note=slot.note if slot else "",
+                    source=self.media_path(asset) if asset else None,
+                )
+            )
+        if not entries:
+            raise ValueError("没有可导出的素材，请先执行召回。")
+
+        summary = (
+            f"平台：{profile.name}（{profile.priority}）"
+            f"｜画幅 {profile.aspect}｜{profile.shot_count}｜{profile.form}"
+            f"｜文案结构：{spec.structure_text}"
+        )
+        result = export_entries(
+            root=self.export_root,
+            label=profile.name,
+            entries=entries,
+            caption=caption,
+            spec_summary=summary,
+        )
+        payload = result.as_payload()
+        payload["label"] = profile.name
+        return {"ok": True, **payload}
+
 
 def _content_type_for(path: Path) -> str:
     suffix = path.suffix.lower()
@@ -985,6 +1089,19 @@ class _Handler(BaseHTTPRequestHandler):
                         platform=str(payload.get("platform", "")),
                         asset_ids=[str(item) for item in raw_ids],
                         extra_note=str(payload.get("extra_note", "")),
+                    )
+                )
+            elif path == "/api/export":
+                payload = json.loads(body or b"{}")
+                raw_slots = payload.get("slots") or []
+                raw_caption = payload.get("caption")
+                self._send_json(
+                    self.app.export(
+                        platform=str(payload.get("platform", "")),
+                        slots=[
+                            item for item in raw_slots if isinstance(item, dict)
+                        ],
+                        caption=raw_caption if isinstance(raw_caption, dict) else None,
                     )
                 )
             else:

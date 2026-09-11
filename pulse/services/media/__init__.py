@@ -45,6 +45,12 @@ from pulse.services.media.describe import (
     vision_config_from_env,
     vision_model_supports_images,
 )
+from pulse.services.media.exporter import (
+    ExportEntry,
+    ExportResult,
+    export_entries,
+    make_export_dir,
+)
 from pulse.services.media.ingest import MediaIngestor, UnsupportedMediaError
 from pulse.services.media.ledger import RecallLedger
 from pulse.services.media.policy import CapacityReport, RecallPick, RecallPolicy
@@ -69,6 +75,8 @@ __all__ = [
     "Category",
     "CategoryCatalog",
     "Description",
+    "ExportEntry",
+    "ExportResult",
     "MediaAsset",
     "MediaIngestor",
     "MediaRegistry",
@@ -84,11 +92,13 @@ __all__ = [
     "asset_id_for",
     "build_describer",
     "caption_spec",
+    "export_entries",
     "find_unverified_claims",
     "generate_caption",
     "heuristic_describe",
     "load_catalog",
     "load_categories",
+    "make_export_dir",
     "match_category",
     "parse_capture_time",
     "platform_choices",
