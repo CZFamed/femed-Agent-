@@ -100,7 +100,12 @@ spawn 时使用固定任务名，便于 root 定位与升级：
 1. **不越界写。** 只创建/修改自己拥有的目录下的文件。
 2. **不改契约。** `pulse/contracts/` 冻结。发现契约有问题 → 消息 root，说明冲突点与建议，等 root 更新。
 3. **不动 Git。** 只有 root 执行 git 命令。子 agent 一律不运行 `git add/commit/checkout/reset`（共享工作区会争抢 index.lock）。
-4. **不重排平台优先级。** P0-A = **LinkedIn + YouTube**；Reddit/Facebook = P1；**VK 冻结**（合规红线，见校准文档 §2.1）；TikTok 暂不投入。
+4. **不重排平台优先级。** P0-A = **LinkedIn + YouTube**；P1 = **Reddit + Facebook + VK**；P2 = Instagram；TikTok 暂不投入。
+   **VK 已于 2026-09-11 法务评审通过、由"冻结"转为正式运营（P1）**，
+   契约同步升至 v1.1（`Platform.VK`）。VK 转正附带**留痕义务**（不阻碍发布，但要有人负责）：
+   每季度做一次制裁名单筛查（OFAC SDN / BIS Entity List / EU）、每个新询盘筛出口对象、
+   保留俄语审校记录与 VK 独立素材台账。法务通过 ≠ 从此不用管，制裁名单是动态的。
+   VK 是唯一非英语平台，对外文案为俄语、由英语母版翻译派生。
 5. **合规红线。** 只用平台官方 API，**不做浏览器自动化发帖**、不绕风控；素材仅用自有/授权；不承诺"零封号"。
 6. **工业件禁止用文生图生成产品图。** 会产出与实物不符的产品图，构成质量承诺风险。产品图只用实拍素材（`菲美得产品图片/`）或已加工素材。
 7. **不伪造数据。** 产能、公差、材质、检测数据一律来自真实来源；缺失就标注 `TODO(need-real-data)`，不要编造数值。
@@ -176,9 +181,9 @@ uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 
 ### 5.4 已验证的基线
 
-**基线测试已存在且全绿**：`pulse/shared/tests/test_contract_baseline.py`（20 项，root 所有）。
+**基线测试已存在且全绿**：`pulse/shared/tests/test_contract_baseline.py`（21 项，root 所有）。
 
-覆盖：`Platform` 白名单（VK / TikTok 不得进入枚举）、`scheduled_at` 时区偏移、LinkedIn / YouTube 必填
+覆盖：`Platform` 白名单（**VK 已入枚举，TikTok 不得进入**）、`scheduled_at` 时区偏移、LinkedIn / YouTube / VK 必填
 `options`、素材 `license_status`（禁止 `pending` 发布）、`compliance.blocked` 硬拦截、hashtag 规范、
 `PublishResult` 的"受理 ≠ 发布"断言、`ErrorClass` 三分法（可重试 / 不可重试 / 轮询）、ID 前缀与时间前缀单调性、序列化。
 
@@ -190,7 +195,7 @@ uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 确信某条断言与 `contracts/INTERFACES.md` 冲突 → 消息 root，附契约条款编号。
 
 > **历史澄清（避免再次误传）**：本文曾写"`pulse/shared/` 已通过 16 项校验"，但当时仓库中并不存在测试文件；
-> 随后又被改写成"当前没有任何自动化测试"。两者都不准确。**以上面这段为准**——基线是 20 项，位置在
+> 随后又被改写成"当前没有任何自动化测试"。两者都不准确。**以上面这段为准**——基线是 21 项（v1.1 版），位置在
 > `pulse/shared/tests/`，且属于 root 自己的域（各域单测仍在 `pulse/services/<域>/tests/`，A6 的跨域测试在 `pulse/tests/`）。
 
 ---

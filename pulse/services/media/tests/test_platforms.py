@@ -68,11 +68,12 @@ def test_slots_carry_report_provenance() -> None:
     assert facebook_video.media_kind == "video", "Facebook 首选形态是原生视频"
 
 
-def test_vk_profile_flags_contract_conflict() -> None:
-    """报告说 VK 转正，但契约仍冻结——配置里必须写明这处冲突。"""
+def test_vk_profile_records_promotion_and_obligations() -> None:
+    """VK 已于 2026-09-11 转正式运营；配置里要写明转正事实与随之而来的留痕义务。"""
     vk = platform_profile("vk")
-    assert "契约冲突" in vk.contract_note
-    assert "冻结" in vk.contract_note
+    assert "转正式运营" in vk.contract_note
+    assert "俄语" in vk.contract_note
+    assert "制裁名单筛查" in vk.contract_note
     assert platform_profile("tiktok").contract_note, "TikTok 也要写明只备素材"
 
 

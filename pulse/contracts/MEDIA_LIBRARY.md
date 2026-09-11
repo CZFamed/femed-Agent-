@@ -1,6 +1,6 @@
-# 媒体资产库与召回策略契约 v1.0
+# 媒体资产库与召回策略契约 v1.1
 
-> 所有者：root　｜　冻结日期：2026-09-11　｜　实现：`pulse/services/media/`
+> 所有者：root　｜　冻结日期：2026-09-11　｜　最近升版：2026-09-11（v1.1）　｜　实现：`pulse/services/media/`
 > 关联：`AGENTS.md` §3 铁律、`pulse/contracts/INTERFACES.md`（发布契约）
 
 本契约定义**素材入库**与**素材召回**两条链路。发布契约（INTERFACES.md）仍然有效，
@@ -56,6 +56,41 @@
   工业件禁止文生图产品图（AGENTS.md §3.6）。
 - 同一内容哈希重复入库一律拒绝，返回 `DuplicateMediaError`。
 
+### 2.6 入库许可（B6，v1.1 新增）
+
+- **只有完成视觉识别的图片才允许入库**。识别成功（`source == "vision"`）时签发
+  入库凭据 `vision_ticket`，入库请求必须携带；凭据绑定**图片内容哈希**，
+  有效期 `VISION_TICKET_TTL_SECONDS`（默认 1 小时）。
+- 无凭据 / 凭据伪造 / 凭据与图片内容不符 → 拒绝入库（HTTP **403**，
+  响应体含 `vision_required: true`）。服务端同样校验，绕过页面直接调接口也进不来。
+- 未提供描述时由服务端自行识别，识别不成功同样拒绝。
+- 应急开关：`PULSE_MEDIA_REQUIRE_VISION=0` 可临时关闭（仅限视觉服务长时间故障时使用）。
+
+### 2.7 品类判定（B7，v1.1 新增）
+
+- 品类（`process` / `sub_process`）**由识别结果决定**，不写死默认值。
+  优先级：模型判定（必须落在既有品类清单内）→ 关键词兜底 → 调用方已选品类 → 留空待人工。
+- 可选品类清单由目录扫描得出（`load_categories`），不硬编码；目录变了清单自动跟着变。
+- 品类的 `sub_process` **可为空**：库里"人员"这类品类本来就没有子目录。
+
+### 2.8 索引文件不算素材（B8，v1.1 新增）
+
+- 汇总索引文件不是素材、不计入容量、不参与召回。判定方式：
+  文件名以 `00_` 开头，**或**描述头部 `content_type: "汇总索引"`。
+- 只比对固定文件名 `00_汇总索引.md` 是不够的——库里实际存在
+  `00_发泡工段汇总索引.md` 这类异名索引。
+
+### 2.9 分平台召回（B9，v1.1 新增）
+
+- 召回可指定 `platform`，按该平台在《四平台推荐风格与方式报告》中要求的**画面位次**
+  逐格挑图（`pulse/services/media/platforms.py`）。
+- 位次匹配顺序：顶层品类过滤 → 关键词命中（命中关键词字段强于命中摘要段落）
+  → 首选形态硬筛选（视频 / 图集）→ 只在**最高分档**（≥ 最高分 95%）内随机。
+- 位次挑不到素材时返回空 `picks`，页面提示补拍；若"有素材但全在冷却期"，
+  响应中 `blocked_by_cooldown = true`，提示等待冷却而非补拍。
+- 平台配置**不是平台优先级的事实来源**：优先级以 `pulse/contracts/INTERFACES.md` 与
+  `pulse/shared/enums.py` 为准。
+
 ---
 
 ## 3. 入库产物约定
@@ -76,13 +111,15 @@
 
 | 方法 | 路径 | 语义 |
 | --- | --- | --- |
-| GET | `/` | 素材库页面（容量横幅、上传表单、素材清单） |
-| GET | `/api/state` | 素材清单 + 容量报告 + 每张图冷却状态 |
-| POST | `/api/assets` | multipart 上传入库（`file`、`process`、`sub_process`、`keywords`、`summary`、`details`） |
+| GET | `/` | 素材库页面（容量横幅、上传表单、按平台召回、素材清单） |
+| GET | `/api/state` | 素材清单 + 容量报告 + 每张图冷却状态 + 可选品类 `categories` + 平台清单 `platforms` |
+| POST | `/api/describe` | multipart（`file`、`process`、`sub_process`）→ 自动描述 + 品类判定 + 入库凭据 `vision_ticket` |
+| POST | `/api/assets` | multipart 上传入库（`file`、`process`、`sub_process`、`keywords`、`summary`、`details`、`vision_ticket`） |
 | POST | `/api/usage` | 标记素材已用于内容 / 发布（`asset_id`、可选 `content_id`） |
-| POST | `/api/recall` | 按策略召回（`query`、可选 `top_k`） |
+| POST | `/api/recall` | 召回（可选 `platform`、`query`、`top_k`）；带 `platform` 时返回按位次分组的 `slots` |
 
-错误语义：格式/体积不合规、重复素材、参数缺失一律 400，响应体 `{ok:false, error}`。
+错误语义：格式/体积不合规、重复素材、参数缺失一律 **400**；入库许可未满足一律 **403**
+（响应体含 `vision_required: true`）。响应体统一为 `{ok:false, error}`。
 
 ---
 
@@ -90,4 +127,5 @@
 
 | 版本 | 日期 | 变更 |
 | --- | --- | --- |
+| 1.1 | 2026-09-11 | 补 B6 入库许可、B7 品类判定、B8 索引文件不计入素材、B9 分平台召回；控制台接口表补 `/api/describe`、`vision_ticket` 与 `categories`/`platforms` 字段，并订正错误码（许可不足为 403） |
 | 1.0 | 2026-09-11 | 首次冻结：入库、冷却、时效优先、加权随机、容量预警 |

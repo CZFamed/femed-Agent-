@@ -84,15 +84,32 @@ def _image_item() -> MediaItem:
 
 
 def test_01_contract_version_is_frozen() -> None:
-    assert CONTRACT_VERSION == "1.0"
+    assert CONTRACT_VERSION == "1.1"
 
 
-def test_02_platform_whitelist_excludes_vk_and_tiktok() -> None:
-    """VK 为合规红线、TikTok 暂不投入，二者都不得进入契约枚举。"""
+def test_02_platform_whitelist_includes_vk_excludes_tiktok() -> None:
+    """VK 于 2026-09-11 法务评审通过转正，进入枚举；TikTok 仍暂不投入。"""
     values = {p.value for p in Platform}
-    assert values == {"linkedin", "youtube", "reddit", "facebook", "instagram"}
-    assert "vk" not in values
+    assert values == {"linkedin", "youtube", "reddit", "facebook", "instagram", "vk"}
+    assert "vk" in values
     assert "tiktok" not in values
+
+
+def test_02b_vk_requires_community_owner_id() -> None:
+    """VK 走社区墙发布：owner_id 必填、且必须是负数的社区 ID。"""
+    post = _linkedin_post(platform=Platform.VK, options={})
+    assert any("owner_id" in e for e in post.validate())
+
+    as_person = _linkedin_post(platform=Platform.VK, options={"owner_id": 1234})
+    assert any("社区 ID" in e for e in as_person.validate()), "正数会发到个人墙，必须拦"
+
+    not_a_number = _linkedin_post(platform=Platform.VK, options={"owner_id": "abc"})
+    assert any("必须是整数" in e for e in not_a_number.validate())
+
+    ok = _linkedin_post(
+        platform=Platform.VK, options={"owner_id": -1234567, "from_group": True}
+    )
+    assert ok.validate() == []
 
 
 def test_03_valid_linkedin_post_passes() -> None:

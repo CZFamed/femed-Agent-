@@ -40,7 +40,8 @@
 3. **Token 永不落日志。** 这是 A3 的头号事故源，测试里要有断言守着。
 4. **`scheduled_at` 必须带时区偏移。** 契约模型会直接把无偏移的时间判为错误——多时区排期漂移是真实事故，不是理论风险。
 5. 你拥有 `schedules` / `publish_jobs` / `accounts` / `credentials` 四张表的写入逻辑；`publish_jobs.unified_post_id` 上有**唯一索引**，这是幂等的第一层防线（第二层在 A2 的 `find_existing()`）。
-6. **平台基线**：P0-A = LinkedIn + YouTube。VK **冻结**，不得实现其调度分支。TikTok 暂不投入。
+6. **平台基线**：P0-A = LinkedIn + YouTube；P1 = Reddit + Facebook + **VK**；P2 = Instagram；TikTok 暂不投入。
+   **VK 已于 2026-09-11 转正（契约 v1.1）**，需实现其调度分支与账号凭据（`wall/manage` 权限）。
 
 ## 5. 依赖与协同
 

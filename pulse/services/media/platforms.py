@@ -225,9 +225,9 @@ PLATFORM_PROFILES: tuple[PlatformProfile, ...] = (
         form="图文长帖 + 相册（复用 LinkedIn 同一批直拍图）",
         caption_length="500–1,500 字符（俄语）",
         contract_note=(
-            "⚠ 契约冲突：报告 §8.1 称 VK 法务评审已通过、转正式运营，"
-            "但 AGENTS.md §3.4 与 pulse/shared/enums.py 仍把 VK 列为冻结、不在 Platform 枚举内。"
-            "本模块只备素材，未改契约；如需转正须单独做契约变更。"
+            "已转正式运营（P1）：契约 v1.1 已把 VK 加入 Platform 枚举。"
+            "注意两点：① 对外文案为俄语，由英语母版翻译派生；"
+            "② 附带每季度制裁名单筛查等留痕义务（见 AGENTS.md §3.4）。"
         ),
         slots=(
             ShotSlot(

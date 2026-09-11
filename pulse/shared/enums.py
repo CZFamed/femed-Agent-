@@ -1,7 +1,10 @@
-"""契约枚举（冻结，v1.0）。
+"""契约枚举（冻结，v1.1）。
 
 与 contracts/INTERFACES.md §3 一一对应。**禁止新增/重命名成员**，
 需要变更请走契约变更流程（消息 root）。
+
+> v1.1（2026-09-11）：`Platform` 新增 `VK`。依据 VK 法务评审通过的结论，
+> VK 由"冻结"转为正式运营（P1），详见 contracts/INTERFACES.md §10 变更记录。
 """
 
 from enum import StrEnum
@@ -12,10 +15,12 @@ class Platform(StrEnum):
 
     优先级（见 AGENTS.md §3.4）：
       P0-A: LINKEDIN, YOUTUBE
-      P1:   REDDIT, FACEBOOK
+      P1:   REDDIT, FACEBOOK, VK
       P2:   INSTAGRAM
-      冻结: VK（合规红线，不实现）
       暂不投入: TIKTOK（仅保留半自动导出能力）
+
+    VK 于 2026-09-11 法务评审通过、转正式运营，附带**每季度制裁名单筛查**等留痕义务
+    （见 AGENTS.md §3.4）；它是本项目中唯一非英语平台。
     """
 
     LINKEDIN = "linkedin"
@@ -23,6 +28,7 @@ class Platform(StrEnum):
     REDDIT = "reddit"
     FACEBOOK = "facebook"
     INSTAGRAM = "instagram"
+    VK = "vk"
 
 
 class ContentType(StrEnum):

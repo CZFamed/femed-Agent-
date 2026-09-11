@@ -47,8 +47,11 @@
 | YouTube | 全自动（resumable upload） | 同上；注意配额（见下） |
 | Reddit | 半自动（`subreddit` 需人工确认） | 仅保证 `options.subreddit` 校验 |
 | Facebook / Instagram | 半自动 | 不实现 Adapter |
-| **VK** | **冻结** | 不实现（合规红线） |
+| **VK** | **全自动（社区墙）** | **✅ 2026-09-11 转正，按契约 v1.1 实现 Adapter**：`options.owner_id` 为负数社区 ID，`from_group` 可选；调用 `wall.post`，需 `wall/manage` 权限 |
 | TikTok | 暂不投入 | 不实现；半自动能力已覆盖 |
+
+> **VK 提醒**：对外文案为俄语（由英语母版翻译派生）；附带每季度制裁名单筛查等留痕义务
+> （AGENTS.md §3.4）。契约已把 `owner_id` 正数判为错误——正数会发到个人墙。
 
 > YouTube 配额是硬约束：单次上传约 1600 单位，日配额约 10000 → **每天最多约 6 次上传**。`find_existing()` 若走 search API 还要约 100 单位，属于"兜底"而非"常规路径"——不要把它放进 happy path。
 

@@ -1,4 +1,4 @@
-"""契约数据模型（冻结，v1.0）。
+"""契约数据模型（冻结，v1.1）。
 
 与 contracts/INTERFACES.md §2 一一对应。
 **纯标准库实现**（不依赖 pydantic），以保证所有域都能无摩擦导入。
@@ -20,7 +20,7 @@ from pulse.shared.enums import (
 )
 
 #: 契约版本。变更契约时由 root 同步升版（见 INTERFACES.md §10）。
-CONTRACT_VERSION = "1.0"
+CONTRACT_VERSION = "1.1"
 
 
 class ContractError(ValueError):
@@ -146,6 +146,8 @@ _REQUIRED_OPTIONS: Mapping[Platform, Mapping[str, bool]] = {
     },
     Platform.FACEBOOK: {"page_id": True},
     Platform.REDDIT: {"subreddit": True},
+    # VK 社区墙发布：owner_id 为社区 ID（社区为负数），from_group 表示以社区名义发布
+    Platform.VK: {"owner_id": True},
 }
 
 _LINKEDIN_VISIBILITY = {"PUBLIC", "CONNECTIONS", "LOGGED_IN"}
@@ -288,6 +290,24 @@ class UnifiedPost:
                 )
             if opts.get("made_for_kids") is not None and not isinstance(opts["made_for_kids"], bool):
                 errors.append("options.made_for_kids 必须是布尔值")
+
+        if platform is Platform.VK:
+            owner = opts.get("owner_id")
+            if owner is not None:
+                try:
+                    owner_id = int(owner)
+                except (TypeError, ValueError):
+                    errors.append(f"options.owner_id 必须是整数（社区 ID）：{owner!r}")
+                else:
+                    if owner_id == 0:
+                        errors.append("options.owner_id 不能为 0")
+                    elif owner_id > 0:
+                        # VK 的 wall.post 用负数表示社区，正数会发到个人墙
+                        errors.append(
+                            f"options.owner_id 应为负数的社区 ID（社区墙发布），当前为 {owner_id}"
+                        )
+            if opts.get("from_group") is not None and not isinstance(opts["from_group"], bool):
+                errors.append("options.from_group 必须是布尔值")
 
         return errors
 

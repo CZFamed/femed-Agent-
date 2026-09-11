@@ -1,6 +1,6 @@
-# Pulse 工程接口契约（冻结版 v1.0）
+# Pulse 工程接口契约（冻结版 v1.1）
 
-> 所有人：**root**　｜　状态：**冻结（FROZEN）**　｜　冻结日期：2026-09-10
+> 所有人：**root**　｜　状态：**冻结（FROZEN）**　｜　冻结日期：2026-09-10　｜　最近升版：2026-09-11（v1.1）
 >
 > **本文件是并行开发的地基。** 所有 agent 只读引用，不得修改。
 > 需要变更 → 发消息给 root，说明冲突点 + 建议方案 + 影响范围，由 root 统一升版。
@@ -13,7 +13,8 @@
 
 | 项 | 取值 |
 | --- | --- |
-| 平台优先级 | **P0-A**: LinkedIn, YouTube　**P1**: Reddit, Facebook　**P2**: Instagram　**冻结**: VK　**暂不投入**: TikTok |
+| 平台优先级 | **P0-A**: LinkedIn, YouTube　**P1**: Reddit, Facebook, **VK**　**P2**: Instagram　**暂不投入**: TikTok |
+| VK 状态 | **转为正式运营（2026-09-11 法务评审通过）**，见 §10 变更记录与 AGENTS.md §3.4 留痕义务 |
 | 业务场景 | B2B 工业铸件出海（采购/供应链为决策人） |
 | 语言 | 英语为主，中英对照供审校 |
 | 发布模式 | API 自动发布为主 + **半自动兜底为 P0 能力**（非降级方案） |
@@ -28,7 +29,7 @@
 ```jsonc
 {
   "unified_post_id": "up_01J8XYZ",        // 幂等键，全局唯一，透传至平台（能传则传）
-  "platform": "linkedin",                  // linkedin | youtube | reddit | facebook | instagram
+  "platform": "linkedin",                  // linkedin | youtube | reddit | facebook | instagram | vk
   "account_id": "acct_01",
   "source_id": "src_20260910_001",         // 溯源：本贴派生自哪条核心内容
   "variant_id": "var_20260910_003",
@@ -77,8 +78,15 @@
 | facebook | `page_id` | 是 | 目标主页 |
 | reddit | `subreddit` | 是 | 由**人工确认**后填入 |
 | reddit | `flair` | 否 | 版规要求时必填 |
+| vk | `owner_id` | 是 | 社区 ID，**必须为负数**（VK 以负值表示社区墙；正数会发到个人墙） |
+| vk | `from_group` | 否 | 以社区名义发布，默认 `true` |
 
 > 工业内容**不使用** `made_for_kids`、`ai_generated_disclosure = true`（除非确实用了 AI 生成画面）。
+
+> **VK 语言口径（v1.1 新增，流程约束而非代码校验）**：VK 是四平台中唯一的非英语平台，
+> 对外文案必须为**俄语**，以英语母版翻译派生并保留审校记录。
+> `Caption` 结构目前只有 `text`（对外主文案）与 `text_zh`（中文审校），
+> 因此 VK 帖的 `caption.text` 应放俄语；是否为此增加 `text_ru` 字段留待 A1 内容域提出。
 
 ---
 
@@ -401,4 +409,5 @@ A5 API ──→ A1 content.generate_variant ──→ A4 compliance.check
 
 | 版本 | 日期 | 变更 | 需同步调整的代码 |
 | --- | --- | --- | --- |
+| v1.1 | 2026-09-11 | **VK 由"冻结"转为正式运营（P1）**。依据：VK 法务评审通过（《菲美得_四平台推荐风格与方式报告_v1》§8.1）。`Platform` 枚举新增 `vk`；新增 VK 必填项 `owner_id`（负数社区 ID）与可选 `from_group`；补 VK 俄语口径说明。TikTok 维持"暂不投入"，仍不入枚举 | `pulse/shared/enums.py` 加 `VK`；`pulse/shared/models.py` 加 `_REQUIRED_OPTIONS[Platform.VK]` 与 `owner_id` 校验；`pulse/shared/tests/test_contract_baseline.py` 的 `test_02` 由"排除 VK"改为"包含 VK、排除 TikTok"；契约版本升 `1.1`（`CONTRACT_VERSION` 与两个守护测试同步） |
 | v1.0 | 2026-09-10 | 首次冻结。补齐 `brand_guides`、`compliance_findings`、`sanctions_screenings` 三张表；新增半自动导出接口与 API；平台优先级按 B2B 基线重排 | 无（尚无代码） |

@@ -14,14 +14,14 @@
 
 | 项 | 取值 | 真源 |
 | --- | --- | --- |
-| 产品版本 | **1.0.0** | `pyproject.toml` + `pulse.__version__` |
-| 接口契约版本 | **1.0**（冻结） | `pulse.shared.CONTRACT_VERSION` |
+| 产品版本 | **1.8.0** | `pyproject.toml` + `pulse.__version__` |
+| 接口契约版本 | **1.1**（冻结） | `pulse.shared.CONTRACT_VERSION` |
 | 版本策略 | 语义化版本 `MAJOR.MINOR.PATCH` | 见 §5 |
 | 变更记录 | 逐版本追加 | `CHANGELOG.md` |
 
 ```powershell
 & ".venv\Scripts\python.exe" -c "import pulse; print(pulse.__version__, pulse.__contract_version__)"
-# 1.0.0 1.0
+# 1.8.0 1.1
 ```
 
 ---

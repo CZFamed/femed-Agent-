@@ -42,8 +42,8 @@ def test_changelog_documents_current_version() -> None:
 
 
 def test_contract_version_is_frozen_baseline() -> None:
-    """契约版本与 1.0 冻结基线一致；升版须由 root 改契约文末变更记录。"""
-    assert CONTRACT_VERSION == "1.0"
+    """契约版本与冻结基线一致；升版须由 root 同步契约文末变更记录。"""
+    assert CONTRACT_VERSION == "1.1"
 
 
 def test_version_module_exports() -> None:
