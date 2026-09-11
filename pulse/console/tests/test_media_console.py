@@ -463,7 +463,26 @@ def test_recall_by_platform_reports_empty_slots(tmp_path) -> None:
     by_order = {slot["order"]: slot for slot in result["slots"]}
     # Facebook 第 2 位次要求"白模/发泡"，库里只有阀体 → 应为空
     assert by_order[2]["picks"] == []
+    assert by_order[2]["matched"] == 0
+    assert by_order[2]["blocked_by_cooldown"] is False, "本来就没这种素材，不是被冷却挡住"
     assert "补拍" not in by_order[2]["role"], "提示语由页面负责，接口只给空结果"
+
+
+def test_empty_slot_distinguishes_cooldown_from_missing(tmp_path) -> None:
+    """"有但都在冷却期"和"根本没有"要能区分开，否则会让人白跑一趟补拍。"""
+    app = make_app(tmp_path)
+    _write_description(
+        app.rag_root, "加工件", "机床件", "IMG_BED.jpg",
+        ("机床床身", "导轨面", "机加工"), "机床床身加工",
+    )
+    slot_before = app.recall(platform="linkedin", top_k=1)["slots"][0]
+    assert slot_before["matched"] == 1 and slot_before["blocked_by_cooldown"] is False
+
+    app.mark_used(asset_id=slot_before["picks"][0]["asset_id"])
+    slot_after = app.recall(platform="linkedin", top_k=1)["slots"][0]
+    assert slot_after["picks"] == []
+    assert slot_after["matched"] == 1
+    assert slot_after["blocked_by_cooldown"] is True
 
 
 def test_recall_by_platform_respects_cooldown(tmp_path) -> None:

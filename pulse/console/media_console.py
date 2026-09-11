@@ -294,7 +294,10 @@ PAGE_HTML = (
     "||\"<p class='muted'>没有可召回素材（可能全部处于冷却期）。</p>\";return;}"
     "document.getElementById('recall-result').innerHTML=d.slots.map(function(s){"
     "var body=s.picks.length?s.picks.map(function(p){return photoHtml(p);}).join('')"
-    ":\"<p class='muted'>这一格暂时没有合适素材，建议按这个位次补拍。</p>\";"
+    ":(s.blocked_by_cooldown"
+    "?\"<p class='muted'>这一格有符合的素材，但都在 15 天冷却期内，暂时不能用。"
+    "可以先换别的图，或等冷却结束。</p>\""
+    ":\"<p class='muted'>这一格还没有合适的素材，建议按这个位次补拍。</p>\");"
     "return \"<div class='slot'><h3>\"+esc(s.role)+\"</h3>\""
     "+(s.note?(\"<p class='muted'>\"+esc(s.note)+\"</p>\"):'')+body+'</div>';}).join('');});});"
     "function photoHtml(p){return \"<div class='asset'><h3>\"+esc(p.file_name)+\"</h3>\""
@@ -671,7 +674,10 @@ class MediaConsoleApp:
                     "role": slot.role,
                     "note": slot.note,
                     "media_kind": slot.media_kind,
-                    "picks": payloads,
+                    "matched": len(scored),
+                    # 有素材但全在冷却期：提示"等冷却"，而不是让人白跑一趟去补拍
+                   "picks": payloads,
+                    "blocked_by_cooldown": bool(scored) and not picks,
                 }
             )
             flat.extend(payloads)
