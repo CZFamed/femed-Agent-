@@ -40,6 +40,14 @@ from pulse.services.media.describe import (
 from pulse.services.media.ingest import MediaIngestor, UnsupportedMediaError
 from pulse.services.media.ledger import RecallLedger
 from pulse.services.media.policy import CapacityReport, RecallPick, RecallPolicy
+from pulse.services.media.platforms import (
+    PLATFORM_PROFILES,
+    PlatformProfile,
+    ShotSlot,
+    platform_choices,
+    platform_profile,
+    slot_score,
+)
 from pulse.services.media.registry import MediaRegistry
 
 __all__ = [
@@ -53,10 +61,13 @@ __all__ = [
     "MediaAsset",
     "MediaIngestor",
     "MediaRegistry",
+    "PLATFORM_PROFILES",
+    "PlatformProfile",
     "RecallConfig",
     "RecallLedger",
     "RecallPick",
     "RecallPolicy",
+    "ShotSlot",
     "UnsupportedMediaError",
     "VisionConfig",
     "asset_id_for",
@@ -67,10 +78,13 @@ __all__ = [
     "load_categories",
     "match_category",
     "parse_capture_time",
+    "platform_choices",
+    "platform_profile",
     "probe_png",
     "probe_image",
     "probe_vision",
     "resolve_category",
+    "slot_score",
     "vision_config_from_env",
     "vision_model_supports_images",
 ]

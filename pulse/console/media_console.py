@@ -47,6 +47,13 @@ from pulse.services.media.ingest import (
 )
 from pulse.services.media.ledger import RecallLedger
 from pulse.services.media.policy import MediaCandidate, RecallPolicy
+from pulse.services.media.platforms import (
+    platform_choices,
+    platform_profile,
+    prefer_media_kind,
+    slot_score,
+    top_tier,
+)
 from pulse.services.media.registry import DEFAULT_REGISTRY_NAME, MediaRegistry
 
 PAGE_HTML = (
@@ -78,6 +85,10 @@ PAGE_HTML = (
     "textarea{width:100%;padding:8px 9px;border:1px solid #c9ced6;border-radius:5px;"
     "font:inherit;box-sizing:border-box;resize:vertical}"
     ".stack{display:grid;gap:12px;margin-top:14px}"
+    ".slot{background:#fff;border:1px solid #dcdfe4;border-radius:8px;padding:14px;"
+    "margin-bottom:12px}"
+    ".slot h3{font-size:14px;margin:0 0 8px}"
+    ".slot .asset{background:#fcfcfd}"
     "@media (max-width:820px){.row{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}}"
     "button{background:#1f4e79;color:#fff;border:0;border-radius:5px;padding:9px 16px;cursor:pointer}"
     ".row button{height:36px;white-space:nowrap}"
@@ -133,11 +144,21 @@ PAGE_HTML = (
     "</div></form>"
     "<p class='muted' id='describe-status'>选择图片后会自动识别并生成描述，不需要手填。</p>"
     "<p class='muted' id='upload-msg'></p></section>"
-    "<section><h2>模拟召回</h2><form id='recall'>"
-    "<div><label>查询词</label><input name='query' placeholder='机床 床身'/></div>"
-    "<div><label>返回条数</label><input name='top_k' type='number' value='3' min='1'/></div>"
-    "<div><button type='submit'>执行召回</button></div></form>"
-    "<div class='grid' id='recall-result'></div></section>"
+    "<section><h2>按平台召回素材</h2>"
+    "<p class='muted'>按《四平台推荐风格与方式报告》里各平台要求的画面位次逐格挑图。"
+    "某一格没有合适素材时会直接提示需要补拍，不会拿别的图凑数。</p>"
+    "<form id='recall'><div class='row'>"
+    "<div class='field'><label>目标平台</label>"
+    "<select name='platform' id='platform-select'></select></div>"
+    "<div class='field'><label>每格返回条数</label>"
+    "<input name='top_k' type='number' value='1' min='1' max='5'/></div>"
+    "<div class='field'><label>补充关键词（选填）</label>"
+    "<input name='query' placeholder='例如 阀体 配重'/></div>"
+    "<div class='field'><label>操作</label>"
+    "<button type='submit'>执行召回</button></div>"
+    "</div></form>"
+    "<div class='hint' id='platform-summary'></div>"
+    "<div id='recall-result'></div></section>"
     "<section><h2>素材清单</h2><div class='grid' id='assets'></div></section>"
     "</main><script>"
     "function esc(v){var d=document.createElement('div');d.textContent=v==null?'':String(v);"
@@ -163,6 +184,11 @@ PAGE_HTML = (
     "if(p){fillSubOptions(p.value,'');}}"
     "function chosenProcess(){var p=document.getElementById('process-select');return p?p.value:'';}"
     "function chosenSub(){var s=document.getElementById('sub-process-select');return s?s.value:'';}"
+    "var platforms=[];"
+    "function applyPlatforms(list){if(!list||!list.length){return;}platforms=list;"
+    "var sel=document.getElementById('platform-select');if(!sel||sel.options.length){return;}"
+    "sel.innerHTML=list.map(function(p){"
+    "return optionHtml(p.key,p.name+'（'+p.priority+'）',list[0].key);}).join('');}"
     "function setGate(on,text,bad){var b=document.getElementById('upload-btn');"
     "if(b){b.disabled=!on;}"
     "var g=document.getElementById('upload-gate');"
@@ -175,6 +201,7 @@ PAGE_HTML = (
     "+\"</span><p class='muted'>\"+esc(a.category)+\"</p><p>\"+esc(a.summary)+\"</p>\"+(extra||'')+\"</div>\";}"
     "function refresh(){fetch('/api/state').then(function(r){return r.json();}).then(function(d){"
     "applyCategories(d.categories);"
+    "applyPlatforms(d.platforms);"
     "var c=d.capacity;var b=document.getElementById('banner');"
     "b.className='banner '+(c.alert==='red'?'red':'ok');"
     "b.textContent=(c.alert==='red'?('红色预警：可召回容量仅 '+c.available+' 张，低于阈值 '"
@@ -254,13 +281,26 @@ PAGE_HTML = (
     "document.getElementById('recall').addEventListener('submit',function(e){e.preventDefault();"
     "var f=new FormData(e.target);"
     "fetch('/api/recall',{method:'POST',headers:{'Content-Type':'application/json'},"
-    "body:JSON.stringify({query:f.get('query'),top_k:Number(f.get('top_k'))})})"
+    "body:JSON.stringify({platform:f.get('platform'),query:f.get('query'),"
+    "top_k:Number(f.get('top_k'))})})"
     ".then(function(r){return r.json();}).then(function(d){"
-    "document.getElementById('recall-result').innerHTML=d.picks.map(function(p){"
-    "return \"<div class='asset'><h3>\"+esc(p.file_name)+\"</h3><span class='tag'>\""
-    "+(p.is_new?'新图加权':'老图')+\"</span><p class='muted'>权重 \"+p.weight+\" ｜ 相似度 \"+p.similarity"
-    "+\"</p><p>\"+esc(p.summary)+\"</p></div>\";}).join('')"
-    "||\"<p class='muted'>没有可召回素材（可能全部处于冷却期）。</p>\";});});"
+    "var info=document.getElementById('platform-summary');"
+    "if(d.platform){info.textContent=d.platform.name+' ｜ '+d.platform.priority+' ｜ 画幅 '+"
+    "d.platform.aspect+' ｜ '+d.platform.shot_count+' ｜ '+d.platform.form+"
+    "(d.platform.contract_note?('　'+d.platform.contract_note):'');"
+    "info.className='hint'+(d.platform.contract_note?' bad':'');}else{info.textContent='';}"
+    "if(!d.slots||!d.slots.length){document.getElementById('recall-result').innerHTML="
+    "d.picks.map(function(p){return photoHtml(p);}).join('')"
+    "||\"<p class='muted'>没有可召回素材（可能全部处于冷却期）。</p>\";return;}"
+    "document.getElementById('recall-result').innerHTML=d.slots.map(function(s){"
+    "var body=s.picks.length?s.picks.map(function(p){return photoHtml(p);}).join('')"
+    ":\"<p class='muted'>这一格暂时没有合适素材，建议按这个位次补拍。</p>\";"
+    "return \"<div class='slot'><h3>\"+esc(s.role)+\"</h3>\""
+    "+(s.note?(\"<p class='muted'>\"+esc(s.note)+\"</p>\"):'')+body+'</div>';}).join('');});});"
+    "function photoHtml(p){return \"<div class='asset'><h3>\"+esc(p.file_name)+\"</h3>\""
+    "+\"<span class='tag\"+(p.is_new?' new':'')+\"'>\"+esc(p.category)+\"</span>\""
+    "+\"<p class='muted'>权重 \"+p.weight+\" ｜ 相似度 \"+p.similarity+\"</p>\""
+    "+\"<p>\"+esc(p.summary)+\"</p></div>\";}"
     "refresh();</script></body></html>"
 )
 
@@ -386,6 +426,7 @@ class MediaConsoleApp:
                 "alert": capacity.alert,
             },
             "categories": self._catalog.as_payload(),
+            "platforms": platform_choices(),
             "assets": items,
         }
 
@@ -559,31 +600,87 @@ class MediaConsoleApp:
             "cooldown_days": self.config.cooldown_days,
         }
 
+    @staticmethod
+    def _pick_payload(pick: Any) -> dict[str, Any]:
+        return {
+            "asset_id": pick.asset_id,
+            "file_name": pick.file_name,
+            "category": pick.category,
+            "summary": pick.summary,
+            "similarity": pick.similarity,
+            "weight": pick.weight,
+            "is_new": pick.is_new,
+        }
+
     def recall(
-        self, *, query: str = "", top_k: int | None = None, now: datetime | None = None
+        self,
+        *,
+        query: str = "",
+        top_k: int | None = None,
+        platform: str = "",
+        now: datetime | None = None,
     ) -> dict[str, Any]:
-        """按策略召回（控制台用关键词相似度替代向量检索）。"""
+        """按策略召回。
+
+        指定 ``platform`` 时按该平台报告里要求的**画面位次**逐格挑图：
+        每个位次一个候选池（顶层品类 + 关键词筛选），再走统一的
+        冷却过滤 + 新图加权 + 加权随机采样。某个位次没有合适素材时
+        返回空 picks，页面会提示"这一格需要补拍"。
+
+        不指定平台时退回原来的关键词召回（控制台用关键词相似度替代向量检索）。
+        """
         assets = self.assets()
-        candidates = [
-            MediaCandidate(asset=asset, similarity=RecallPolicy.keyword_similarity(query, asset))
-            for asset in assets
-        ]
-        picks = self.policy.recall(candidates, top_k=top_k, now=now)
+        extra_terms = tuple(term for term in query.replace(",", " ").split() if term)
+        profile = platform_profile(platform)
+        if profile is None:
+            candidates = [
+                MediaCandidate(
+                    asset=asset, similarity=RecallPolicy.keyword_similarity(query, asset)
+                )
+                for asset in assets
+            ]
+            picks = self.policy.recall(candidates, top_k=top_k, now=now)
+            return {
+                "query": query,
+                "platform": None,
+                "slots": [],
+                "count": len(picks),
+                "picks": [self._pick_payload(pick) for pick in picks],
+            }
+
+        limit = top_k or 1
+        slots: list[dict[str, Any]] = []
+        flat: list[dict[str, Any]] = []
+        for slot in profile.slots:
+            scored = [
+                (slot_score(slot, asset, extra_terms=extra_terms), asset) for asset in assets
+            ]
+            scored = [(score, asset) for score, asset in scored if score > 0]
+            # 报告指定的"首选形态"（视频 / 图集）是硬口径，不能靠权重随机压过去
+            scored = prefer_media_kind(slot, scored)
+            # 位次要求明确：只在最高分那一档里随机，保证挑得准
+            scored = top_tier(scored)
+            candidates = [
+                MediaCandidate(asset=asset, similarity=score) for score, asset in scored
+            ]
+            picks = self.policy.recall(candidates, top_k=limit, now=now)
+            payloads = [self._pick_payload(pick) for pick in picks]
+            slots.append(
+                {
+                    "order": slot.order,
+                    "role": slot.role,
+                    "note": slot.note,
+                    "media_kind": slot.media_kind,
+                    "picks": payloads,
+                }
+            )
+            flat.extend(payloads)
         return {
             "query": query,
-            "count": len(picks),
-            "picks": [
-                {
-                    "asset_id": pick.asset_id,
-                    "file_name": pick.file_name,
-                    "category": pick.category,
-                    "summary": pick.summary,
-                    "similarity": pick.similarity,
-                    "weight": pick.weight,
-                    "is_new": pick.is_new,
-                }
-                for pick in picks
-            ],
+            "platform": profile.as_payload(),
+            "slots": slots,
+            "count": len(flat),
+            "picks": flat,
         }
 
 
@@ -668,6 +765,7 @@ class _Handler(BaseHTTPRequestHandler):
                     self.app.recall(
                         query=str(payload.get("query", "")),
                         top_k=int(top_k) if top_k else None,
+                        platform=str(payload.get("platform", "")),
                     )
                 )
             else:

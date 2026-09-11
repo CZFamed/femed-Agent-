@@ -19,11 +19,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from pulse.services.media.catalog import (
+    SUMMARY_CONTENT_TYPE,
+    is_summary_index_name,
+)
+
 #: 目录扫描时跳过的名字前缀（隐藏目录、缓存目录）
 SKIP_PREFIXES = (".", "_")
-
-#: 汇总索引文件名，不计入品类条数
-SUMMARY_INDEX_NAME = "00_汇总索引.md"
 
 
 @dataclass(frozen=True)
@@ -123,7 +125,20 @@ def load_categories(rag_root: str | Path) -> CategoryCatalog:
 
 
 def _count_descriptions(directory: Path) -> int:
-    return sum(1 for path in directory.glob("*.md") if path.name != SUMMARY_INDEX_NAME)
+    """数这个目录里真正的素材描述条数，索引文件不算。"""
+    count = 0
+    for path in directory.glob("*.md"):
+        if is_summary_index_name(path.name):
+            continue
+        # 文件名不合约定、但头部标了汇总索引的，也要排除
+        try:
+            head = path.read_text(encoding="utf-8", errors="replace")[:300]
+        except OSError:
+            head = ""
+        if f"content_type: \"{SUMMARY_CONTENT_TYPE}\"" in head:
+            continue
+        count += 1
+    return count
 
 
 def _bigrams(text: str) -> set[str]:

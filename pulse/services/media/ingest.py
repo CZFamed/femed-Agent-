@@ -20,6 +20,7 @@ from pulse.services.media.catalog import (
     SUMMARY_INDEX_NAME,
     MediaAsset,
     asset_id_for,
+    is_summary_index_name,
     parse_front_matter,
 )
 from pulse.services.media.config import (
@@ -208,7 +209,7 @@ class MediaIngestor:
         images = 0
         videos = 0
         for path in sorted(rag_dir.glob("*.md")):
-            if path.name == SUMMARY_INDEX_NAME:
+            if is_summary_index_name(path.name):
                 continue
             header, body = parse_front_matter(path.read_text(encoding="utf-8"))
             source_file = str(header.get("source_file") or path.stem)

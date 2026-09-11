@@ -22,8 +22,25 @@ from pulse.services.media.registry import MediaRegistry
 
 SUMMARY_INDEX_NAME = "00_汇总索引.md"
 
+#: 汇总索引文件的 content_type 标记
+SUMMARY_CONTENT_TYPE = "汇总索引"
+
 #: 视频描述文件的源文件后缀（这类条目不计入"图片库容量"）
 VIDEO_SUFFIXES: tuple[str, ...] = (".mp4", ".mov", ".avi", ".mkv", ".webm")
+
+
+def is_summary_index_name(name: str) -> bool:
+    """按文件名判断是否为汇总索引。
+
+    约定是所有索引都以 ``00_`` 开头。库里实际不止 ``00_汇总索引.md`` 一种
+    （例如 ``00_发泡工段汇总索引.md``），只比对固定文件名会把索引当成一张图片。
+    """
+    return str(name).startswith("00_")
+
+
+def is_summary_index_header(header: dict[str, Any]) -> bool:
+    """按描述头部判断是否为汇总索引（比文件名更可靠）。"""
+    return str(header.get("content_type") or "").strip() == SUMMARY_CONTENT_TYPE
 
 
 def asset_id_for(relative_path: str | Path) -> str:
@@ -138,11 +155,13 @@ def load_catalog(
         return []
     assets: list[MediaAsset] = []
     for path in sorted(root.rglob("*.md")):
-        if path.name == SUMMARY_INDEX_NAME:
+        if is_summary_index_name(path.name):
             continue
         relative = path.relative_to(root)
         asset_id = asset_id_for(relative.as_posix())
         header, body = parse_front_matter(path.read_text(encoding="utf-8"))
+        if is_summary_index_header(header):
+            continue
         added_at = registry.registered_at(asset_id) if registry else None
         keywords = header.get("keywords") or []
         if isinstance(keywords, str):

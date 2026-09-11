@@ -382,6 +382,112 @@ def test_upload_into_singleton_category_without_sub_process(tmp_path) -> None:
     assert app.state()["capacity"]["available"] == 1
 
 
+# ---------- 按平台召回 ----------
+
+
+def _write_description(
+    rag_root,
+    process: str,
+    sub_process: str,
+    file_name: str,
+    keywords: tuple[str, ...],
+    summary: str,
+) -> None:
+    """写一份与库存格式一致的描述，供召回匹配。"""
+    folder = rag_root / process / sub_process
+    folder.mkdir(parents=True, exist_ok=True)
+    keyword_text = ", ".join(f'"{item}"' for item in keywords)
+    (folder / f"{file_name}.md").write_text(
+        "---\n"
+        f'source_file: "{file_name}"\n'
+        f'process: "{process}"\n'
+        f'sub_process: "{sub_process}"\n'
+        'content_type: "图片描述"\n'
+        f"keywords: [{keyword_text}]\n"
+        "---\n\n"
+        f"# {file_name} 图片描述\n\n"
+        f"## {summary}\n",
+        encoding="utf-8",
+    )
+
+
+def test_state_exposes_platform_profiles(tmp_path) -> None:
+    app = make_app(tmp_path)
+    platforms = app.state()["platforms"]
+    assert [item["key"] for item in platforms] == ["linkedin", "facebook", "tiktok", "vk"]
+    assert platforms[0]["name"] == "LinkedIn"
+    assert platforms[0]["priority"] == "P0-A"
+    assert platforms[0]["slot_count"] == 4
+
+
+def test_page_ships_platform_dropdown(tmp_path) -> None:
+    assert "id='platform-select'" in PAGE_HTML
+    assert "<select name='platform'" in PAGE_HTML
+    assert "applyPlatforms" in PAGE_HTML
+    assert "platform-summary" in PAGE_HTML
+
+
+def test_recall_by_platform_matches_each_slot(tmp_path) -> None:
+    app = make_app(tmp_path)
+    rag = app.rag_root
+    _write_description(
+        rag, "加工件", "机床件", "IMG_BED.jpg",
+        ("机床床身", "导轨面", "机加工", "铸铁件"), "大型机床床身导轨面加工",
+    )
+    _write_description(
+        rag, "铸件", "扫描", "IMG_SCAN.jpg",
+        ("三维扫描", "尺寸检测", "点云", "偏差色谱"), "铸件三维扫描尺寸检测",
+    )
+    _write_description(
+        rag, "铸件", "阀体", "IMG_PACK.jpg",
+        ("木托盘", "成批包装", "编号标识", "灰铁铸件"), "托盘打包待发的小型阀体",
+    )
+    result = app.recall(platform="linkedin", top_k=1)
+    assert result["platform"]["key"] == "linkedin"
+    assert [slot["order"] for slot in result["slots"]] == [1, 2, 3, 4]
+
+    by_order = {slot["order"]: slot for slot in result["slots"]}
+    assert by_order[1]["picks"][0]["file_name"] == "IMG_BED.jpg", "能力证明该挑床身"
+    assert by_order[3]["picks"][0]["file_name"] == "IMG_SCAN.jpg", "质量能力该挑扫描"
+    assert by_order[4]["picks"][0]["file_name"] == "IMG_PACK.jpg", "交付能力该挑待发"
+    assert result["count"] == len(result["picks"])
+
+
+def test_recall_by_platform_reports_empty_slots(tmp_path) -> None:
+    """没有合适素材的位次要明确留空，让页面提示补拍，而不是随便凑一张。"""
+    app = make_app(tmp_path)
+    _write_description(
+        app.rag_root, "铸件", "阀体", "IMG_ONLY.jpg", ("阀体", "灰铁铸件"), "一件阀体铸件"
+    )
+    result = app.recall(platform="facebook", top_k=1)
+    by_order = {slot["order"]: slot for slot in result["slots"]}
+    # Facebook 第 2 位次要求"白模/发泡"，库里只有阀体 → 应为空
+    assert by_order[2]["picks"] == []
+    assert "补拍" not in by_order[2]["role"], "提示语由页面负责，接口只给空结果"
+
+
+def test_recall_by_platform_respects_cooldown(tmp_path) -> None:
+    app = make_app(tmp_path)
+    rag = app.rag_root
+    for index in range(2):
+        _write_description(
+            rag, "加工件", "机床件", f"IMG_BED{index}.jpg",
+            ("机床床身", "导轨面", "机加工"), f"机床床身 {index}",
+        )
+    first = app.recall(platform="linkedin", top_k=1)["slots"][0]["picks"][0]["asset_id"]
+    app.mark_used(asset_id=first)
+    again = app.recall(platform="linkedin", top_k=1)["slots"][0]["picks"]
+    assert again, "还有第二张可用，不该整格空掉"
+    assert all(pick["asset_id"] != first for pick in again), "冷却中的素材不得再被召回"
+
+
+def test_recall_without_platform_keeps_keyword_behaviour(tmp_path) -> None:
+    app = make_app(tmp_path)
+    result = app.recall(query="阀体", top_k=3)
+    assert result["platform"] is None
+    assert result["slots"] == []
+
+
 @pytest.fixture()
 def live_server(tmp_path):
     app = make_app(tmp_path, threshold=1, require_vision=True)
@@ -509,6 +615,17 @@ def test_http_routes(live_server) -> None:
     )
     recall = json.loads(conn.getresponse().read().decode("utf-8"))
     assert recall["picks"] == []
+
+    # 指定平台时走位次召回，平台信息要原样透传回前端
+    conn.request(
+        "POST",
+        "/api/recall",
+        body=json.dumps({"platform": "linkedin", "top_k": 1}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    by_platform = json.loads(conn.getresponse().read().decode("utf-8"))
+    assert by_platform["platform"]["key"] == "linkedin"
+    assert len(by_platform["slots"]) == 4
 
     conn.request(
         "POST",
