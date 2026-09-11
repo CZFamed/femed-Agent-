@@ -12,6 +12,7 @@ import pytest
 from pulse.services.media.describe import (
     SYSTEM_PROMPT,
     TextOnlyModelError,
+    RETRYABLE_STATUS,
     VisionAPIError,
     VisionConfig,
     VisionDescriber,
@@ -27,6 +28,7 @@ from pulse.services.media.describe import (
     vision_model_supports_images,
 )
 from pulse.services.media.categories import Category, CategoryCatalog
+from pulse.services.media import describe as describe_module
 
 
 def _png(width: int, height: int) -> bytes:
@@ -516,3 +518,85 @@ def test_prompt_asks_for_category_when_catalog_present() -> None:
     assert "铸件/阀体" in instructions and "人员" in instructions
     # 无子类的品类也要能落库
     assert (description.process, description.sub_process) == ("人员", "")
+
+
+# ---------- 网络抖动重试 ----------
+
+
+def _ok_body() -> dict:
+    return {
+        "output": [
+            {
+                "type": "message",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": json.dumps(
+                            {"summary": "阀体铸件", "details": "可见灰色阀体。", "keywords": ["阀体"]},
+                            ensure_ascii=False,
+                        ),
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_transport_error_is_retried_once(monkeypatch) -> None:
+    """网络超时/中断重试一次：实测"大图超时"会让识别直接退回、进而入不了库。"""
+    monkeypatch.setattr(describe_module, "RETRY_BACKOFF_S", 0)
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.ConnectTimeout("第一次连接超时")
+        return httpx.Response(200, json=_ok_body())
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    description = VisionDescriber(VisionConfig(api_key="k"), client=client).describe(
+        probe_png(), file_name="a.png", process="铸件", sub_process="阀体"
+    )
+    assert description.source == "vision"
+    assert len(calls) == 2, "应当重试一次后成功"
+
+
+def test_gateway_error_is_retried_then_reported(monkeypatch) -> None:
+    monkeypatch.setattr(describe_module, "RETRY_BACKOFF_S", 0)
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(503, json={"error": {"type": "Unavailable", "message": "down"}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(VisionAPIError) as excinfo:
+        VisionDescriber(VisionConfig(api_key="k"), client=client).describe(
+            probe_png(), file_name="a.png", process="铸件", sub_process="阀体"
+        )
+    assert excinfo.value.status == 503
+    assert len(calls) == 2, "5xx 要重试，但重试完仍失败就如实报错"
+
+
+def test_auth_error_is_not_retried(monkeypatch) -> None:
+    """Key 错了重试也没用，不该浪费时间。"""
+    monkeypatch.setattr(describe_module, "RETRY_BACKOFF_S", 0)
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(401, json={"error": {"type": "AuthError", "message": "bad key"}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(VisionAPIError) as excinfo:
+        VisionDescriber(VisionConfig(api_key="k"), client=client).describe(
+            probe_png(), file_name="a.png", process="铸件", sub_process="阀体"
+        )
+    assert excinfo.value.status == 401
+    assert len(calls) == 1
+    assert 401 not in RETRYABLE_STATUS
+
+
+def test_default_timeout_is_generous_for_large_photos() -> None:
+    """默认超时不能按小图设：11MB 实拍图实测就要 13 秒。"""
+    assert VisionConfig().timeout_s >= 60

@@ -126,6 +126,7 @@ PAGE_HTML = (
     "cursor:not-allowed}"
     ".export-bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;"
     "margin-top:16px;padding-top:14px;border-top:1px dashed #dcdfe4}"
+    ".ghost{background:#fff;color:#1f4e79;border:1px solid #1f4e79}"
     ".hint{font-size:12px;color:#9a5b00;margin-top:6px}"
     ".hint.bad{color:#b3261e}"
     ".hint.ok{color:#1b5e20}"
@@ -144,6 +145,8 @@ PAGE_HTML = (
     "</p></section>"
     "<section><h2>上传实拍图入库</h2>"
     "<p class='muted'>入库许可：图片必须先通过视觉识别。识别没成功，按钮保持灰色，无法入库。</p>"
+    "<div><button type='button' id='vision-check-btn' class='ghost'>视觉模型自检</button>"
+    "<span class='hint' id='vision-check-result'></span></div>"
     "<form id='upload'>"
     "<div class='row'>"
     "<div class='field'><label>图片文件</label>"
@@ -339,7 +342,8 @@ PAGE_HTML = (
     "visionTicket=d.vision_ticket;"
     "setGate(true,'视觉识别已完成，可以入库。',false);}"
     "else{setGate(false,d.vision_required===false?('视觉识别未完成，但当前已关闭入库校验，可直接入库。'):"
-    "('视觉识别未完成，不能入库。请检查 .env 里的视觉模型配置，然后重新选图。'),"
+    "('视觉识别未完成，不能入库。'+(d.vision_error?('原因：'+d.vision_error+'　'):'')"
+    "+'点上面的「视觉模型自检」看详细原因。'),"
     "d.vision_required!==false);}})"
     ".catch(function(){document.getElementById('describe-status').textContent='自动生成失败，请重试。';"
     "setGate(false,'网络异常，视觉识别未完成，不能入库。',true);});}"
@@ -353,6 +357,17 @@ PAGE_HTML = (
     "if(subSelect){subSelect.addEventListener('change',function(){"
     "var note=document.getElementById('category-note');"
     "if(note&&!visionTicket){note.textContent='';}});}"
+    "document.getElementById('vision-check-btn').addEventListener('click',function(){"
+    "var out=document.getElementById('vision-check-result');"
+    "out.className='hint';out.textContent='正在自检（会真实调用一次模型，约需几秒）…';"
+    "fetch('/api/vision-check',{method:'POST',headers:{'Content-Type':'application/json'},"
+    "body:'{}'}).then(function(r){return r.json();}).then(function(d){"
+    "out.className='hint'+(d.ok?' ok':' bad');"
+    "out.textContent=(d.ok?'✓ 视觉模型可用：':'✗ 视觉模型不可用（阶段 '+(d.stage||'?')+'）：')"
+    "+d.message+(d.hint?('　建议：'+d.hint):'')"
+    "+'　［模型 '+d.model+'｜地址 '+d.endpoint+'｜Key '"
+    "+(d.key_configured?'已配置':'未配置')+'｜超时 '+d.timeout_s+' 秒］';});"
+    "});"
     "document.getElementById('caption-btn').addEventListener('click',function(){"
     "if(!lastRecall||!lastRecall.platform){return;}"
     "var status=document.getElementById('caption-status');"
@@ -699,6 +714,7 @@ class MediaConsoleApp:
             description = self.describer(
                 data, file_name=file_name, process=process, sub_process=sub_process
             )
+            vision_error = ""
         except Exception as exc:  # 网络 / 额度 / 解析失败都不应阻断入库
             description = replace(
                 heuristic_describe(
@@ -709,7 +725,10 @@ class MediaConsoleApp:
                     "画面内容待人工补充。",
                 ),
             )
+            vision_error = str(exc)
         vision_ok = description.source == "vision"
+        if not vision_ok and not vision_error and not self.vision_config.enabled:
+            vision_error = "未配置 PULSE_VISION_API_KEY（见仓库根 .env）"
         # 品类：模型/描述器给了就用，没给则按识别出的关键词兜底，
         # 再不行——保留调用方已经选好的品类，最后才留空交给人工。
         resolved_process = (description.process or "").strip()
@@ -739,6 +758,8 @@ class MediaConsoleApp:
             "sub_process": resolved_sub,
             "category_source": category_source,
             "vision_required": self.require_vision,
+            # 视觉识别失败时把**真实原因**带出去：只报"请检查 .env"会把人带偏
+            "vision_error": vision_error,
             "vision_ticket": (
                 self._issue_vision_ticket(
                     file_name=file_name, data=data, process=process, sub_process=sub_process
@@ -858,6 +879,32 @@ class MediaConsoleApp:
             if asset.asset_id == target:
                 return asset
         return None
+
+    def vision_check(self) -> dict[str, Any]:
+        """视觉模型自检：把"到底哪一步不行"讲清楚，不用去翻 .env 猜。"""
+        from pulse.services.media.describe import probe_vision
+
+        config = self.vision_config
+        result = probe_vision(config, client=self.caption_client)
+        return {
+            "ok": bool(result.get("ok")),
+            "stage": result.get("stage", ""),
+            "message": result.get("message", ""),
+            "hint": result.get("hint", ""),
+            "endpoint": config.endpoint,
+            "model": config.model,
+            "session": config.session,
+            "timeout_s": config.timeout_s,
+            "key_configured": config.enabled,
+            # 自检只证明"能识图"，不消耗素材台账
+            "detail": {
+                "base_url": config.base_url,
+                "api_style": config.api_style,
+                "max_output_tokens": config.max_output_tokens,
+                "caption_max_tokens": config.caption_max_tokens,
+                "export_root": str(self.export_root),
+            },
+        }
 
     def media_path(self, asset: MediaAsset) -> Path | None:
         """定位素材文件。
@@ -1109,6 +1156,8 @@ class _Handler(BaseHTTPRequestHandler):
                         caption=raw_caption if isinstance(raw_caption, dict) else None,
                     )
                 )
+            elif path == "/api/vision-check":
+                self._send_json(self.app.vision_check())
             else:
                 self._send_json({"ok": False, "error": "not found"}, status=404)
         except (UnsupportedMediaError, DuplicateMediaError) as exc:

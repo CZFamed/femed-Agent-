@@ -21,6 +21,7 @@ import json
 import os
 import re
 import struct
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,12 @@ from pulse.services.media.categories import (
 )
 
 VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".webm")
+
+#: 网络抖动只重试这一次（超时 / 连接中断 / 网关 5xx），第二遍仍失败就如实报错。
+#: 实测"上传大图超时"会让识别直接退回基础描述、进而入不了库，重试一次能挡掉多数偶发。
+RETRY_ATTEMPTS = 2
+RETRY_BACKOFF_S = 1.0
+RETRYABLE_STATUS: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 
 SYSTEM_PROMPT = (
     "你是工业铸件外贸企业的素材编目员。请只根据图片中**肉眼可见**的内容写中文描述。"
@@ -228,7 +235,9 @@ class VisionConfig:
     api_key: str = ""
     model: str = "deepseek-v4.1-flash"
     api_style: str = "responses"  # responses | chat
-    timeout_s: float = 45.0
+    #: 45 秒对大图偏紧：11MB 实拍图实测 13 秒，网络慢一点就会超时退回。
+    #: 超时属于可重试错误，但把默认值放宽能从源头减少这类失败。
+    timeout_s: float = 90.0
     session: str = "pulse-media-library"
     max_output_tokens: int = 2000
     #: 短文比描述长得多，且模型会先"思考"占掉大量输出预算，所以单独放宽
@@ -357,11 +366,11 @@ def vision_config_from_env(root: Path | None = None) -> VisionConfig:
     def pick(name: str, default: str) -> str:
         return os.environ.get(name) or file_values.get(name) or default
 
-    raw_timeout = pick("PULSE_VISION_TIMEOUT", "45")
+    raw_timeout = pick("PULSE_VISION_TIMEOUT", "90")
     try:
         timeout = float(raw_timeout)
     except ValueError:
-        timeout = 45.0
+        timeout = 90.0
     raw_tokens = pick("PULSE_VISION_MAX_TOKENS", "2000")
     try:
         max_tokens = int(raw_tokens)
@@ -402,7 +411,35 @@ def post_json(
     """把 payload POST 到配置的端点并返回 JSON；失败统一抛 ``VisionAPIError``。
 
     视觉识别与短文生成共用这条通道，避免两处各写一份请求与报错逻辑。
-    """
+
+   """
+    last_error: Exception | None = None
+    for attempt in range(RETRY_ATTEMPTS):
+        final = attempt + 1 >= RETRY_ATTEMPTS
+        try:
+            response = _post_once(config, payload, client=client)
+        except Exception as exc:  # noqa: BLE001 - 需要区分网络类异常再决定是否重试
+            if not _is_transient_exception(exc) or final:
+                raise
+            last_error = exc
+        else:
+            if response.status_code < 400:
+                return response.json()
+            if response.status_code not in RETRYABLE_STATUS or final:
+                provider_type, provider_message = _provider_error_of(response)
+                raise VisionAPIError(
+                    response.status_code,
+                    provider_type,
+                    provider_message,
+                    _hint_for(response.status_code, provider_type),
+                )
+            last_error = VisionAPIError(response.status_code)
+        time.sleep(RETRY_BACKOFF_S)
+    raise VisionAPIError(0, "Unknown", str(last_error or "未知错误"), "已重试仍失败")
+
+
+def _post_once(config: VisionConfig, payload: dict[str, Any], *, client: Any | None):
+    """真正发一次请求（不含重试）。"""
     import httpx  # 项目依赖，按需导入避免无网络环境下的额外开销
 
     headers = {
@@ -413,19 +450,18 @@ def post_json(
     }
     url = config.endpoint
     if client is not None:
-        response = client.post(url, headers=headers, json=payload)
-    else:
-        with httpx.Client(timeout=config.timeout_s) as http_client:
-            response = http_client.post(url, headers=headers, json=payload)
-    if response.status_code >= 400:
-        provider_type, provider_message = _provider_error_of(response)
-        raise VisionAPIError(
-            response.status_code,
-            provider_type,
-            provider_message,
-            _hint_for(response.status_code, provider_type),
-        )
-    return response.json()
+        return client.post(url, headers=headers, json=payload)
+    with httpx.Client(timeout=config.timeout_s) as http_client:
+        return http_client.post(url, headers=headers, json=payload)
+
+
+def _is_transient_exception(exc: Exception) -> bool:
+    """网络超时 / 连接中断 / 5xx 网关错误才值得重试。"""
+    import httpx
+
+    if isinstance(exc, httpx.TransportError):  # 含 TimeoutException / ConnectError
+        return True
+    return isinstance(exc, VisionAPIError) and exc.status in RETRYABLE_STATUS
 
 
 class VisionDescriber:

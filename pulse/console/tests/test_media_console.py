@@ -850,6 +850,101 @@ def test_enabled_button_label_is_readable() -> None:
     assert _contrast(match.group(2), match.group(1)) >= 4.5
 
 
+# ---------- 视觉失败要给出真因，而不是笼统指 .env ----------
+
+
+def test_describe_reports_vision_error_on_failure(tmp_path) -> None:
+    def broken(data, *, file_name, process, sub_process):
+        raise RuntimeError("视觉接口返回 HTTP 401：API Key 无效或已过期")
+
+    app = make_app(tmp_path, describer=broken)
+    result = app.describe(file_name="a.jpg", data=b"\xff\xd8x", process="铸件", sub_process="阀体")
+    assert result["source"] == "heuristic"
+    assert result["vision_ticket"] == ""
+    assert "401" in result["vision_error"], "真实原因必须回传，供页面直接显示"
+    assert "Key 无效" in result["vision_error"]
+
+
+def test_describe_reports_missing_key(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("PULSE_VISION_API_KEY", raising=False)
+    _seed_categories(tmp_path / "RAG知识库" / "图片描述")
+    app = MediaConsoleApp(
+        rag_root=tmp_path / "RAG知识库" / "图片描述",
+        media_root=tmp_path / "菲美得产品图片",
+        ledger_path=tmp_path / "ledger.sqlite3",
+        env_root=tmp_path,  # 该目录没有 .env
+    )
+    assert app.vision_config.enabled is False
+    result = app.describe(file_name="a.jpg", data=b"\xff\xd8x", process="铸件", sub_process="阀体")
+    assert result["vision_ticket"] == ""
+    assert "PULSE_VISION_API_KEY" in result["vision_error"]
+
+
+def test_describe_has_no_error_on_success(tmp_path) -> None:
+    app = make_app(tmp_path, describer=StubDescriber())
+    result = app.describe(file_name="a.jpg", data=b"\xff\xd8x", process="铸件", sub_process="阀体")
+    assert result["source"] == "vision"
+    assert result["vision_error"] == ""
+    assert result["vision_ticket"]
+
+
+class _ProbeClient:
+    """让 probe_vision 走到"能识图"分支的桩件。"""
+
+    def __init__(self, status: int, payload: dict) -> None:
+        self.status = status
+        self.payload = payload
+
+    def post(self, url, headers=None, json=None):
+        return httpx.Response(self.status, json=self.payload)
+
+
+def test_vision_check_reports_config_and_stage(tmp_path) -> None:
+    app = make_app(tmp_path, describer=StubDescriber())
+    app.vision_config = app.vision_config.__class__(api_key="", model="deepseek-v4.1-flash")
+    result = app.vision_check()
+    assert result["ok"] is False
+    assert result["stage"] == "config"
+    assert result["key_configured"] is False
+    assert result["model"] == "deepseek-v4.1-flash"
+    assert "PULSE_VISION_API_KEY" in result["message"]
+    assert result["detail"]["export_root"]
+
+
+def test_vision_check_surfaces_http_error_detail(tmp_path) -> None:
+    app = make_app(tmp_path, describer=StubDescriber())
+    app.vision_config = app.vision_config.__class__(api_key="bad-key", model="deepseek-v4.1-flash")
+    app.caption_client = _ProbeClient(
+        401, {"type": "error", "error": {"type": "AuthError", "message": "invalid api key"}}
+    )
+    result = app.vision_check()
+    assert result["ok"] is False
+    assert result["stage"] == "request"
+    assert "401" in result["message"]
+    assert "invalid api key" in result["message"]
+    assert result["key_configured"] is True
+
+
+def test_vision_check_endpoint(live_server) -> None:
+    app, host, port = live_server
+    app.vision_config = app.vision_config.__class__(api_key="")
+    conn = http.client.HTTPConnection(host, port, timeout=10)
+    conn.request(
+        "POST", "/api/vision-check", body=b"{}", headers={"Content-Type": "application/json"}
+    )
+    payload = json.loads(conn.getresponse().read().decode("utf-8"))
+    assert payload["ok"] is False
+    assert payload["stage"] == "config"
+    conn.close()
+
+
+def test_page_ships_vision_check_button(tmp_path) -> None:
+    assert "id='vision-check-btn'" in PAGE_HTML
+    assert "/api/vision-check" in PAGE_HTML
+    assert "vision_error" in PAGE_HTML, "失败提示要带上真实原因"
+    assert "视觉模型自检" in PAGE_HTML
+
+
 @pytest.fixture()
 def live_server(tmp_path):
     app = make_app(tmp_path, threshold=1, require_vision=True)
