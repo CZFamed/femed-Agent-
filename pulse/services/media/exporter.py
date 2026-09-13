@@ -5,6 +5,10 @@
 1. 按**位次顺序**复制素材原图（``01_…``、``02_…``），视频也一并带上；
 2. 写一份 ``说明.txt``：每个位次要什么画面、实际用的是哪个文件；
 3. 有短文时写一份 ``文案.txt``：正文 + 标签 + 第一条评论 + 英语母版，复制即用。
+4. 回报**哪些素材真的进了包**（``ExportResult.used_asset_ids``）——调用方据此记冷却。
+
+第 4 条是"导出 = 这一帖进入发布"的落点：没复制成功的素材不算数，
+调用方不得把它计入冷却。
 
 两条硬约束：
 
@@ -35,6 +39,8 @@ class ExportEntry:
     summary: str = ""
     note: str = ""
     source: Path | None = None
+    #: 该位次选中的素材 ID；缺失时调用方无法据此记冷却
+    asset_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +48,8 @@ class ExportResult:
     directory: Path
     copied: tuple[str, ...] = field(default=())
     missing: tuple[str, ...] = field(default=())
+    #: 真的进了包（文件存在且复制成功）的素材 ID，按首次出现的顺序去重
+    used_asset_ids: tuple[str, ...] = field(default=())
 
     @property
     def file_count(self) -> int:
@@ -105,6 +113,15 @@ def export_entries(
 
     # 同一条素材可能被两个位次选中：只复制一份，在说明里注明覆盖了哪些位次
     seen: dict[str, str] = {}
+    used_ids: list[str] = []
+    used_seen: set[str] = set()
+
+    def _note_used(entry: ExportEntry) -> None:
+        """登记"这一条确实进了导出包"。"""
+        if entry.asset_id and entry.asset_id not in used_seen:
+            used_seen.add(entry.asset_id)
+            used_ids.append(entry.asset_id)
+
     for entry in entries:
         if entry.source is None or not Path(entry.source).is_file():
             missing.append(entry.file_name)
@@ -115,6 +132,8 @@ def export_entries(
 
         key = str(Path(entry.source).resolve())
         if key in seen:
+            # 同一张图已在包里：位次要求被同一张素材覆盖，同样算"进了包"
+            _note_used(entry)
             lines.append(f"{entry.order}. {entry.role}")
             lines.append(f"   → 与 {seen[key]} 同图（{entry.file_name}）")
             lines.append("")
@@ -136,6 +155,7 @@ def export_entries(
             continue
         copied.append(target_name)
         seen[key] = target_name
+        _note_used(entry)
         lines.append(f"{entry.order}. {entry.role}")
         lines.append(f"   → {target_name}")
         if entry.summary:
@@ -152,7 +172,12 @@ def export_entries(
     if caption:
         (directory / "文案.txt").write_text(_caption_text(caption), encoding="utf-8-sig")
 
-    return ExportResult(directory=directory, copied=tuple(copied), missing=tuple(missing))
+    return ExportResult(
+        directory=directory,
+        copied=tuple(copied),
+        missing=tuple(missing),
+        used_asset_ids=tuple(used_ids),
+    )
 
 
 def _caption_text(caption: dict[str, object]) -> str:

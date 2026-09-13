@@ -785,6 +785,61 @@ def test_export_reports_missing_media_file(tmp_path) -> None:
     assert result["missing"]
 
 
+def _recalled_slots(app) -> list[dict]:
+    """把 LinkedIn 召回结果压成页面回传的 slots 形状。"""
+    recalled = app.recall(platform="linkedin", top_k=1)
+    return [
+        {"order": slot["order"], "asset_id": pick["asset_id"]}
+        for slot in recalled["slots"]
+        for pick in slot["picks"]
+    ]
+
+
+def test_export_puts_assets_into_cooldown(tmp_path) -> None:
+    """点导出 = 这一帖的素材进入发布，素材必须立刻开始计冷却。"""
+    app = _export_app(tmp_path)
+    slots = _recalled_slots(app)
+    assert slots, "先要有可导出的素材"
+
+    result = app.export(platform="linkedin", slots=slots)
+
+    exported = {item["asset_id"] for item in slots}
+    assert set(result["used"]) == exported, "导出成功的素材都要记入台账"
+    assert result["cooldown_days"] == 15
+    cooling = {asset["asset_id"]: asset["cooldown_days_left"] for asset in app.state()["assets"]}
+    for asset_id in exported:
+        assert cooling[asset_id] == 15, "导出后该素材应显示冷却中"
+
+
+def test_exported_asset_is_not_recalled_again(tmp_path) -> None:
+    """冷却期内同一张素材不得再被召回，否则冷却等于没记。"""
+    app = _export_app(tmp_path)
+    target = next(slot for slot in app.recall(platform="linkedin", top_k=1)["slots"] if slot["picks"])
+    asset_id = target["picks"][0]["asset_id"]
+
+    app.export(platform="linkedin", slots=[{"order": target["order"], "asset_id": asset_id}])
+
+    again = next(
+        slot
+        for slot in app.recall(platform="linkedin", top_k=1)["slots"]
+        if slot["order"] == target["order"]
+    )
+    assert again["picks"] == [], "刚导出过的素材不应再被召回"
+    assert again["blocked_by_cooldown"] is True, "空位次要说清是被冷却挡住"
+
+
+def test_export_does_not_mark_files_that_failed(tmp_path) -> None:
+    """没真的复制进包的素材不记冷却——否则白扣 15 天。"""
+    app = _export_app(tmp_path)
+    slots = _recalled_slots(app)
+    (app.media_root / "加工件" / "机床件" / "IMG_BED.png").unlink()
+
+    result = app.export(platform="linkedin", slots=slots)
+
+    assert result["used"] == []
+    assert all(asset["cooldown_days_left"] == 0 for asset in app.state()["assets"])
+
+
 def test_export_endpoint_returns_directory(live_server) -> None:
     app, host, port = live_server
     _write_description(

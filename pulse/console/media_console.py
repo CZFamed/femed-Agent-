@@ -192,7 +192,7 @@ PAGE_HTML = (
     "<div class='export-bar'>"
     "<button type='button' id='export-btn' disabled>导出这一帖的素材</button>"
     "<button type='button' id='export-open' style='display:none'>复制导出文件夹路径</button>"
-    "<span class='hint' id='export-status'>请先执行召回，再导出。</span></div>"
+    "<span class='hint' id='export-status'>请先执行召回，再导出（导出后这些素材进入 15 天冷却）。</span></div>"
     "<div class='caption-box' id='caption-box' style='display:none'>"
     "<div id='caption-head'></div>"
     "<div class='field'><label>补充要求（选填，例如“突出机床床身与导轨面”）</label>"
@@ -458,10 +458,12 @@ PAGE_HTML = (
     ".then(function(r){return r.json();}).then(function(d){"
     "if(!d.ok){status.textContent='导出失败：'+d.error;return;}"
     "status.textContent='已导出 '+d.file_count+' 个文件到：'+d.directory"
+    "+((d.used&&d.used.length)?('，'+d.used.length+' 张素材进入 '+d.cooldown_days+' 天冷却'):'')"
     "+(d.missing&&d.missing.length?('（有 '+d.missing.length+' 条素材没找到文件，详见说明.txt）'):'');"
     "status.className='hint'+(d.missing&&d.missing.length?' bad':' ok');"
     "document.getElementById('export-open').style.display='inline-block';"
     "document.getElementById('export-open').dataset.path=d.directory;"
+    "refresh();"
     "}).catch(function(){status.textContent='导出失败，请重试。';});});"
     "document.getElementById('export-open').addEventListener('click',function(){"
     "var path=this.dataset.path||'';"
@@ -891,6 +893,22 @@ class MediaConsoleApp:
             "cooldown_days": self.config.cooldown_days,
         }
 
+    def mark_exported_used(
+        self, asset_ids: tuple[str, ...], *, content_id: str
+    ) -> list[str]:
+        """把"真的进了导出包"的素材记入台账（触发冷却），返回本次新计入的素材 ID。
+
+        导出即视为这一帖进入发布（媒体库契约 §2.1），所以导出后不需要再人工点
+        "标记已用于内容"。没复制成功的素材不会出现在 ``asset_ids`` 里，不会被误计。
+        """
+        marked: list[str] = []
+        for asset_id in asset_ids:
+            if self.ledger.mark_used(
+                asset_id, brand=self.config.brand, content_id=content_id, event="used"
+            ):
+                marked.append(asset_id)
+        return marked
+
     @staticmethod
     def _pick_payload(pick: Any) -> dict[str, Any]:
         return {
@@ -1178,6 +1196,7 @@ class MediaConsoleApp:
                     summary=asset.summary if asset else "",
                     note=slot.note if slot else "",
                     source=self.media_path(asset) if asset else None,
+                    asset_id=asset.asset_id if asset else None,
                 )
             )
         if not entries:
@@ -1197,6 +1216,12 @@ class MediaConsoleApp:
         )
         payload = result.as_payload()
         payload["label"] = profile.name
+        # 导出 = 这一帖的素材已定稿、交给人工发布，按契约 §2.1 属于"实际进入发布"，
+        # 因此在这里写台账。content_id 用导出目录名：同一次导出重复调用不会重复消耗冷却。
+        payload["used"] = self.mark_exported_used(
+            result.used_asset_ids, content_id=result.directory.name
+        )
+        payload["cooldown_days"] = self.config.cooldown_days
         return {"ok": True, **payload}
 
 
