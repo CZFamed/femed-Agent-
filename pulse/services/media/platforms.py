@@ -16,6 +16,11 @@
 2. **这里不是平台优先级的事实来源**。优先级仍以 ``pulse/contracts/INTERFACES.md``
    与 ``pulse/shared/enums.py`` 为准；本模块只描述"素材准备"口径，
    与发布侧契约的关系见 ``PlatformProfile.contract_note``。
+3. **品类改名要跟着改这里**（2026-09-14 素材库调整）：三维扫描从 ``铸件/扫描``
+   挪到 ``生产流程/扫描``，浇注现场单独成 ``生产流程/浇筑``，泡沫模样浸涂/烘干
+   从 ``涂装线`` 拆出为 ``生产流程/黄模``，原 ``铸件/阀体``、``加工件/阀体``
+   改名为 ``*／壳体``。顶层品类没变，所以位次仍按顶层匹配；但**检测类位次必须
+   把 ``生产流程`` 列进去**，否则扫描素材跟着目录一搬家就再也召回不到。
 """
 
 from __future__ import annotations
@@ -113,7 +118,8 @@ PLATFORM_PROFILES: tuple[PlatformProfile, ...] = (
             ShotSlot(
                 order=3,
                 role="质量能力：三维扫描 / 三坐标检测",
-                processes=("铸件", "人员"),
+                # 生产流程：三维扫描素材 2026-09-14 起归在 生产流程/扫描
+                processes=("铸件", "生产流程", "人员"),
                 keywords=("扫描", "三维扫描", "尺寸检测", "点云", "偏差", "检测", "逆向"),
                 media_kind="image",
                 note="报告 §3.1：三维扫描与三坐标是质量能力的核心证据",
@@ -142,7 +148,10 @@ PLATFORM_PROFILES: tuple[PlatformProfile, ...] = (
                 order=1,
                 role="浇铸现场：浇铸区全景 / 浇注后冷却（原生视频首选）",
                 processes=("厂区_场景", "生产流程"),
-                keywords=("浇铸", "浇注", "冷却", "车间全景", "消失模", "发泡"),
+                keywords=(
+                    "浇铸", "浇注", "浇筑", "冷却", "浇包", "砂箱",
+                    "车间全景", "消失模", "发泡", "熔炼",
+                ),
                 media_kind="video",
                 note="报告 §3.2：直接上传原始片段，不剪不配乐",
             ),
@@ -150,7 +159,11 @@ PLATFORM_PROFILES: tuple[PlatformProfile, ...] = (
                 order=2,
                 role="工艺过程：白模 / 发泡成型",
                 processes=("生产流程",),
-                keywords=("白模", "泡沫模样", "发泡", "模具箱", "模样", "EPS"),
+                # 黄模 = 泡沫模样挂完涂料、烘干后的样子（2026-09-14 从涂装线拆出）
+                keywords=(
+                    "白模", "黄模", "泡沫模样", "发泡", "模具箱", "模样", "EPS",
+                    "涂料", "浸涂", "浆料",
+                ),
             ),
             ShotSlot(
                 order=3,
@@ -181,7 +194,7 @@ PLATFORM_PROFILES: tuple[PlatformProfile, ...] = (
                 order=1,
                 role="浇铸",
                 processes=("厂区_场景", "生产流程"),
-                keywords=("浇铸", "浇注", "冷却"),
+                keywords=("浇铸", "浇注", "浇筑", "冷却", "浇包", "砂箱"),
             ),
             ShotSlot(
                 order=2,
@@ -204,7 +217,7 @@ PLATFORM_PROFILES: tuple[PlatformProfile, ...] = (
             ShotSlot(
                 order=5,
                 role="检测",
-                processes=("铸件", "人员"),
+                processes=("铸件", "生产流程", "人员"),
                 keywords=("扫描", "检测", "尺寸", "点云", "偏差"),
             ),
             ShotSlot(
@@ -241,7 +254,7 @@ PLATFORM_PROFILES: tuple[PlatformProfile, ...] = (
                 order=2,
                 role="生产工艺：白模 / 发泡 / 涂装",
                 processes=("生产流程",),
-                keywords=("白模", "发泡", "涂装", "消失模涂料", "烘干"),
+                keywords=("白模", "黄模", "发泡", "涂装", "消失模涂料", "浸涂", "浆料", "烘干"),
                 media_kind="image",
             ),
             ShotSlot(
@@ -254,7 +267,7 @@ PLATFORM_PROFILES: tuple[PlatformProfile, ...] = (
             ShotSlot(
                 order=4,
                 role="设备与检测",
-                processes=("加工件", "铸件"),
+                processes=("加工件", "铸件", "生产流程"),
                 keywords=("加工中心", "镗床", "扫描", "检测", "尺寸"),
                 media_kind="image",
             ),

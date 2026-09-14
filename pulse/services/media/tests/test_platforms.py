@@ -132,3 +132,37 @@ def test_profile_payload_is_serialisable() -> None:
     ).as_payload()
     assert payload["slot_count"] == 1
     assert payload["key"] == "k"
+
+
+# ---------- 2026-09-14 素材库品类调整后的位次口径 ----------
+
+
+def test_scan_slot_follows_scan_to_production_flow() -> None:
+    """三维扫描 2026-09-14 从「铸件/扫描」挪到「生产流程/扫描」，检测位次要跟得上。
+
+    否则素材一搬家，LinkedIn 的质量位次就再也挑不到扫描证据——这是"目录调整
+    把配置打散"的真实风险，所以在这里钉死。
+    """
+    scan_asset = make_asset(
+        process="生产流程",
+        sub_process="扫描",
+        keywords=("三维扫描", "点云比对", "偏差色谱"),
+    )
+    for key in ("linkedin", "tiktok"):
+        profile = platform_profile(key)
+        slots = {slot.order: slot for slot in profile.slots}
+        inspection = slots[3] if key == "linkedin" else slots[5]
+        assert slot_score(inspection, scan_asset) > 0, f"{key} 的检测位次应能召回扫描素材"
+
+
+def test_pouring_and_yellow_pattern_slots_match_new_sub_processes() -> None:
+    """新拆出的两个工序目录（浇筑 / 黄模）要能被对应位次召回。"""
+    pouring = make_asset(
+        process="生产流程", sub_process="浇筑", keywords=("浇注", "砂箱", "浇包")
+    )
+    yellow = make_asset(
+        process="生产流程", sub_process="黄模", keywords=("浸涂", "浆料", "涂料")
+    )
+    facebook = {slot.order: slot for slot in platform_profile("facebook").slots}
+    assert slot_score(facebook[1], pouring) > 0, "浇铸位次要认「浇筑」工序"
+    assert slot_score(facebook[2], yellow) > 0, "工艺位次要认「黄模」工序"

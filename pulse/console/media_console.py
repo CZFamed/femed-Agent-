@@ -183,7 +183,7 @@ PAGE_HTML = (
     "<div class='field'><label>每格返回条数</label>"
     "<input name='top_k' type='number' value='1' min='1' max='5'/></div>"
     "<div class='field'><label>补充关键词（选填）</label>"
-    "<input name='query' placeholder='例如 阀体 配重'/></div>"
+    "<input name='query' placeholder='例如 壳体 配重 管件'/></div>"
     "<div class='field'><label>操作</label>"
     "<button type='submit'>执行召回</button></div>"
     "</div></form>"
