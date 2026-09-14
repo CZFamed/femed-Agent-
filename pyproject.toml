@@ -1,6 +1,6 @@
 [project]
 name = "pulse"
-version = "1.14.0"
+version = "1.15.0"
 description = "Pulse 海外社媒内容 Agent（B2B 工业铸件出海）"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -28,9 +28,11 @@ from pulse.services.media.config import (
     ALLOWED_VIDEO_SUFFIXES,
     BRAND_NAME,
     MAX_IMAGE_BYTES,
+    MAX_PSD_BYTES,
     MAX_VIDEO_BYTES,
 )
 from pulse.services.media.registry import MediaRegistry
+from pulse.services.media.psd import PSD_SUFFIXES
 
 
 class UnsupportedMediaError(ValueError):
@@ -104,7 +106,7 @@ class MediaIngestor:
         if not process:
             raise UnsupportedMediaError("必须指定 process（品类）")
 
-        payload = self._read_payload(data, source_path)
+        payload = self._read_payload(data, source_path, suffix=suffix)
         content_hash = hashlib.sha256(payload).hexdigest()
         existing = self.registry.find_by_hash(content_hash)
         if existing:
@@ -175,7 +177,9 @@ class MediaIngestor:
         return self.add_media(**kwargs)
 
     # ---------- 内部实现 ----------
-    def _read_payload(self, data: bytes | None, source_path: str | Path | None) -> bytes:
+    def _read_payload(
+        self, data: bytes | None, source_path: str | Path | None, *, suffix: str = ""
+    ) -> bytes:
         if data is not None:
             payload = data
         elif source_path is not None:
@@ -184,8 +188,12 @@ class MediaIngestor:
             raise UnsupportedMediaError("必须提供 data 或 source_path")
         if not payload:
             raise UnsupportedMediaError("空文件")
-        if len(payload) > self.max_bytes:
-            raise UnsupportedMediaError(f"文件超过上限 {self.max_bytes} 字节")
+        # 设计稿（PSD/PSB）比实拍图大得多，单独给上限；其余仍按 max_bytes 卡
+        limit = MAX_PSD_BYTES if suffix in PSD_SUFFIXES else self.max_bytes
+        if len(payload) > limit:
+            raise UnsupportedMediaError(
+                f"文件超过上限 {limit // (1024 * 1024)} MB（{suffix or '该格式'}）"
+            )
         return payload
 
     def _render_description(

@@ -34,8 +34,17 @@ VISION_TICKET_TTL_SECONDS = 3600
 DEFAULT_TOP_K = 3
 
 #: 入库文件白名单与大小上限
-ALLOWED_IMAGE_SUFFIXES: frozenset[str] = frozenset({".jpg", ".jpeg", ".png", ".webp", ".bmp"})
+#:
+#: ``.psd`` / ``.psb``（Photoshop 文档）也在白名单里：设计稿同样要能进库、能识别、能召回。
+#: 它们不是栅格格式，入库后用 ``pulse.services.media.psd`` 解出合并图再送模型 /
+#: 预览 / 导出（见媒体库契约 §2.5.3）。``.psb`` 是 Photoshop 的大文档格式。
+ALLOWED_IMAGE_SUFFIXES: frozenset[str] = frozenset(
+    {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".psd", ".psb"}
+)
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+#: PSD / PSB 的体积上限。设计稿比实拍图大得多（多层 + 无损通道），单独给额度。
+MAX_PSD_BYTES = 200 * 1024 * 1024
 
 #: 视频白名单与大小上限（实拍视频，模型走抽帧识别）
 ALLOWED_VIDEO_SUFFIXES: frozenset[str] = frozenset({".mp4", ".mov", ".avi", ".mkv", ".webm"})

@@ -1169,7 +1169,8 @@ def test_upload_video_writes_mp4_md(tmp_path, monkeypatch) -> None:
 
 
 def test_upload_accepts_video_files_in_the_page() -> None:
-    assert "accept='image/*,video/*'" in PAGE_HTML
+    """上传框要同时收图、视频与 Photoshop 文档（.psd 不在 image/* 里，必须显式列）。"""
+    assert "accept='image/*,video/*,.psd'" in PAGE_HTML
 
 
 # ---------- 先查重再识别（省识别费） ----------

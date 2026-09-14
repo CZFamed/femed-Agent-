@@ -59,6 +59,12 @@ from pulse.services.media.ingest import (
     UnsupportedMediaError,
 )
 from pulse.services.media.ledger import RecallLedger
+from pulse.services.media.psd import (
+    DEFAULT_MAX_SIDE as PSD_PREVIEW_MAX_SIDE,
+    PSD_SUFFIXES,
+    UnsupportedPsdError,
+    to_png as psd_to_png,
+)
 from pulse.services.media.policy import MediaCandidate, RecallPolicy
 from pulse.services.media.platforms import (
     platform_choices,
@@ -145,15 +151,16 @@ PAGE_HTML = (
     "第二步：看最上方的横幅——绿色表示素材充足；红色表示可用图片少于 112 张（约一周用量），需要尽快补拍。<br/>"
     "第三步：某张图被内容用掉后，点它卡片上的“标记已用于内容”，这张图 15 天内不会再被选中。"
     "</p></section>"
-    "<section><h2>上传实拍素材入库（图片 / 视频）</h2>"
+    "<section><h2>上传实拍素材入库（图片 / 视频 / PSD）</h2>"
     "<p class='muted'>入库许可：素材必须先通过视觉识别。识别没成功，按钮保持灰色，无法入库。<br/>"
-    "视频接口本身不支持视频输入，系统会自动抽 4 张静帧送识别（成本约等于一张原图）。</p>"
+    "视频接口本身不支持视频输入，系统会自动抽 4 张静帧送识别（成本约等于一张原图）。<br/>"
+    "Photoshop 文档（.psd）会先解出合并图再送识别与预览，导出时另存一份同画面的 PNG。</p>"
     "<div><button type='button' id='vision-check-btn' class='ghost'>视觉模型自检</button>"
     "<span class='hint' id='vision-check-result'></span></div>"
     "<form id='upload'>"
     "<div class='row'>"
     "<div class='field'><label>图片文件</label>"
-    "<input type='file' name='file' accept='image/*,video/*' required/></div>"
+    "<input type='file' name='file' accept='image/*,video/*,.psd' required/></div>"
     "<div class='field'><label>品类 process</label>"
     "<select name='process' id='process-select' required></select></div>"
     "<div class='field'><label>子类 sub_process</label>"
@@ -1227,7 +1234,10 @@ class MediaConsoleApp:
 
 #: 查重时遍历的素材后缀（与入库白名单一致）
 _MEDIA_SUFFIXES = frozenset(
-    {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".mp4", ".mov", ".avi", ".mkv", ".webm"}
+    {
+        ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".psd", ".psb",
+        ".mp4", ".mov", ".avi", ".mkv", ".webm",
+    }
 )
 
 
@@ -1261,12 +1271,27 @@ def _content_type_for(path: Path) -> str:
         ".webp": "image/webp",
         ".bmp": "image/bmp",
         ".gif": "image/gif",
+        # PSD 预览时已经转成 PNG（见 _preview_payload），这里只是兜底
+        ".psd": "image/png",
+        ".psb": "image/png",
         ".mp4": "video/mp4",
         ".mov": "video/quicktime",
         ".avi": "video/x-msvideo",
         ".mkv": "video/x-matroska",
         ".webm": "video/webm",
     }.get(suffix, "application/octet-stream")
+
+
+def _preview_payload(path: Path) -> tuple[bytes, str]:
+    """预览用字节流。
+
+    浏览器不认识 Photoshop 文档，所以 ``.psd`` / ``.psb`` 先解出合并图再转 PNG；
+    其它格式原样回传（零修饰，字节级）。转换只做解码 + 必要的降采样。
+    """
+    data = path.read_bytes()
+    if path.suffix.lower() in PSD_SUFFIXES:
+        return psd_to_png(data, max_side=PSD_PREVIEW_MAX_SIDE), "image/png"
+    return data, _content_type_for(path)
 
 
 def _disposition_value(disposition: str, key: str) -> str:
@@ -1456,11 +1481,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": "素材文件已不在磁盘上"}, status=404)
             return
         try:
-            data = path.read_bytes()
+            data, content_type = _preview_payload(path)
+        except UnsupportedPsdError as exc:
+            self._send_json({"ok": False, "error": f"PSD 无法预览：{exc}"}, status=500)
+            return
         except OSError as exc:
             self._send_json({"ok": False, "error": f"读取失败：{exc}"}, status=500)
             return
-        self._send_file(data, _content_type_for(path))
+        self._send_file(data, content_type)
 
     def _send_file(self, data: bytes, content_type: str) -> None:
         """发送文件内容；支持 Range，否则视频无法拖动进度。"""

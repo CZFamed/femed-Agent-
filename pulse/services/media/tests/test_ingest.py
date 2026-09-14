@@ -51,6 +51,39 @@ def test_add_image_writes_description_index_and_registry(tmp_path) -> None:
     assert catalog[0].is_legacy is False
 
 
+def test_psd_ingest_uses_its_own_size_limit_and_image_naming(tmp_path) -> None:
+    """PSD 走图片白名单，但体积上限单独放宽（设计稿动辄上百 MB）。"""
+    from pulse.services.media.tests.test_psd import build_psd, rgb_planes
+
+    psd = build_psd(rgb_planes(6, 4), width=6, height=4)
+    assert len(psd) > 64, "样例要明显大于下面给的实拍图上限"
+    ingestor = make_ingestor(tmp_path, max_bytes=64)
+    asset = ingestor.add_image(
+        file_name="菲美得海报.psd",
+        process="生产流程",
+        sub_process="黄模",
+        data=psd,
+        summary="设计稿：黄模工序海报",
+        added_at=NOW,
+    )
+    assert asset.file_name == "菲美得海报.psd"
+    # 图片描述命名规则：去扩展名（视频才带扩展名）
+    assert asset.description_path.endswith("菲美得海报.md")
+    text = __import__("pathlib").Path(asset.description_path).read_text(encoding="utf-8")
+    assert 'source_file: "菲美得海报.psd"' in text
+    assert 'content_type: "图片描述"' in text
+
+    # 同样的体积限制对实拍图仍然生效
+    with pytest.raises(UnsupportedMediaError):
+        ingestor.add_image(
+            file_name="too-big.jpg",
+            process="生产流程",
+            sub_process="黄模",
+            data=b"\xff\xd8" + b"x" * 200,
+            added_at=NOW,
+        )
+
+
 def test_duplicate_content_is_rejected(tmp_path) -> None:
     ingestor = make_ingestor(tmp_path)
     ingestor.add_image(

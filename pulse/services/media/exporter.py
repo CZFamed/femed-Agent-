@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from pulse.services.media.psd import PSD_SUFFIXES, to_png as psd_to_png
+
 #: 导出文件名里不允许出现的字符
 UNSAFE_CHARS = '<>:"/\\|?*'
 
@@ -158,6 +160,17 @@ def export_entries(
         _note_used(entry)
         lines.append(f"{entry.order}. {entry.role}")
         lines.append(f"   → {target_name}")
+        # PSD 发不到社媒：同时写一份同画面的 PNG。只做格式转换（解出合并图 + 编码 PNG），
+        # 不裁剪、不调色、不加字——零修饰口径（AGENTS.md §3.6）仍然成立。
+        if suffix.lower() in PSD_SUFFIXES:
+            png_name = f"{target_name[: -len(suffix)]}.png"
+            try:
+                (directory / png_name).write_bytes(psd_to_png(Path(entry.source).read_bytes(), max_side=None))
+            except Exception as exc:  # noqa: BLE001 - 解不出来就如实报告，不影响原图
+                lines.append(f"      转换 PNG 失败：{exc}")
+            else:
+                copied.append(png_name)
+                lines.append(f"      转换：{png_name}（PSD 解出的合并图 → PNG，未做任何修饰）")
         if entry.summary:
             lines.append(f"      画面：{entry.summary}")
         if entry.note:

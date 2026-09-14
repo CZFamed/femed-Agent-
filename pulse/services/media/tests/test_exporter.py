@@ -192,6 +192,50 @@ def test_export_handles_video_files(tmp_path) -> None:
     assert result.copied[0].endswith(".mp4")
 
 
+def test_export_converts_psd_to_png(tmp_path) -> None:
+    """PSD 发不到社媒：导出时除了原文件，还要落一份同画面的 PNG。"""
+    from pulse.services.media.tests.test_psd import build_psd, parse_png, rgb_planes
+
+    payload = build_psd(rgb_planes(4, 3), width=4, height=3)
+    entries = [
+        ExportEntry(
+            order=1,
+            role="产品图（设计稿）",
+            file_name="海报.psd",
+            category="生产流程/黄模",
+            source=_source(tmp_path, "海报.psd", payload),
+        )
+    ]
+    result = export_entries(root=tmp_path / "out", label="VK", entries=entries, now=NOW)
+    names = list(result.copied)
+    assert any(name.endswith(".psd") for name in names), "原 PSD 要一起给"
+    png = [name for name in names if name.endswith(".png")]
+    assert len(png) == 1, "同时要有一份可直接发布的 PNG"
+    info = parse_png((result.directory / png[0]).read_bytes())
+    assert (info["width"], info["height"]) == (4, 3)
+    assert (result.directory / names[0]).read_bytes() == payload, "原文件仍是字节级复制"
+    notes = (result.directory / "说明.txt").read_text(encoding="utf-8-sig")
+    assert "PSD" in notes and "未做任何修饰" in notes
+
+
+def test_export_psd_that_cannot_decode_still_ships_original(tmp_path) -> None:
+    """解不出来时如实说明，但不能因此丢掉原文件。"""
+    entries = [
+        ExportEntry(
+            order=1,
+            role="位次",
+            file_name="坏文件.psd",
+            category="铸件/壳体",
+            source=_source(tmp_path, "坏文件.psd", b"8BPS-not-really"),
+        )
+    ]
+    result = export_entries(root=tmp_path / "out", label="VK", entries=entries, now=NOW)
+    assert result.file_count == 1
+    assert result.copied[0].endswith(".psd")
+    notes = (result.directory / "说明.txt").read_text(encoding="utf-8-sig")
+    assert "转换 PNG 失败" in notes
+
+
 def test_export_payload_is_serialisable(tmp_path) -> None:
     entries = [
         ExportEntry(

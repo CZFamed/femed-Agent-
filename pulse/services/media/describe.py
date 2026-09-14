@@ -31,6 +31,14 @@ from pulse.services.media.categories import (
     CategoryCatalog,
     resolve_category,
 )
+from pulse.services.media.psd import (
+    DEFAULT_MAX_SIDE as PSD_MAX_SIDE,
+    UnsupportedPsdError,
+    is_psd,
+    is_psd_name,
+    read_header as read_psd_header,
+    to_png as psd_to_png,
+)
 
 VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".webm")
 
@@ -134,6 +142,14 @@ def probe_image(data: bytes) -> ImageInfo:
     if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
         width, height = struct.unpack(">II", data[16:24])
         return ImageInfo("png", width, height)
+    if is_psd(data):
+        # PSD 的尺寸在文件头里；解不出来的（32 位、ZIP 压缩等）也不在这里报错，
+        # 兜底描述只需要"能写的就写、写不了就留空"。
+        try:
+            header = read_psd_header(data)
+        except UnsupportedPsdError:
+            return ImageInfo("psd")
+        return ImageInfo("psd", header.width, header.height)
     if data.startswith(b"GIF8") and len(data) >= 10:
         width, height = struct.unpack("<HH", data[6:10])
         return ImageInfo("gif", width, height)
@@ -453,6 +469,17 @@ def _mime_of(file_name: str) -> str:
     }.get(suffix, "image/jpeg")
 
 
+def image_for_vision(data: bytes, file_name: str) -> tuple[bytes, str]:
+    """把素材转成视觉接口能吃的栅格图。
+
+    Photoshop 文档（``.psd`` / ``.psb``）不是栅格格式，模型接口不认，所以先解出
+    合并图再编码成 PNG；其它格式原样送。转换只做解码与必要的降采样，不裁剪、不调色。
+    """
+    if is_psd(data) or is_psd_name(file_name):
+        return psd_to_png(data, max_side=PSD_MAX_SIDE), "image/png"
+    return data, _mime_of(file_name)
+
+
 def _to_chat_content(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """把统一的 content 片段转成 Chat Completions 形态。"""
     converted: list[dict[str, Any]] = []
@@ -632,8 +659,9 @@ class VisionDescriber:
                 f"模型 {self.config.model} 不能识图（只有文本能力，或需在中国区单独开通）。"
                 f"请改用 {RECOMMENDED_VISION_MODEL}（备选 {FALLBACK_VISION_MODEL}）。"
             )
-        mime = _mime_of(file_name)
-        encoded = base64.b64encode(data).decode("ascii")
+        # PSD / PSB 先解成 PNG 再送：模型接口不认 Photoshop 文档（见 image_for_vision）
+        payload_bytes, mime = image_for_vision(data, file_name)
+        encoded = base64.b64encode(payload_bytes).decode("ascii")
         payload = self._build_payload(
             f"data:{mime};base64,{encoded}",
             file_name=file_name,
