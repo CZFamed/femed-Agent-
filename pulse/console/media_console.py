@@ -164,7 +164,9 @@ PAGE_HTML = (
     "<div class='field'><label>品类 process</label>"
     "<select name='process' id='process-select' required></select></div>"
     "<div class='field'><label>子类 sub_process</label>"
-    "<select name='sub_process' id='sub-process-select' required></select></div>"
+    # 子类**不能**加 required：像「人员」这种没有子目录的品类，唯一选项的值就是
+    # 空字符串，浏览器会把空值判成"未选择"进而拦下整张表单（2026-09-15 的入库 BUG）。
+    "<select name='sub_process' id='sub-process-select'></select></div>"
     "<div class='field'><label>入库许可</label>"
     "<button type='submit' id='upload-btn' disabled>上传并入库</button>"
     "</div></div>"
@@ -1464,8 +1466,12 @@ class _Handler(BaseHTTPRequestHandler):
             self.app.describe(
                 file_name=file_name,
                 data=data,
-                process=fields.get("process", "").strip() or "未分类",
-                sub_process=fields.get("sub_process", "").strip() or "未分类",
+                # 页面传来的就是用户在下拉框里选的东西，**原样透传**：
+                # 空的子类是有意义的（「人员」这类品类本来就没有子类），
+                # 一旦改写成"未分类"，用户手选的品类就对不上库里的品类清单，
+                # 会被判成"没能判断出品类"而丢掉。
+                process=fields.get("process", "").strip(),
+                sub_process=fields.get("sub_process", "").strip(),
             )
         )
 

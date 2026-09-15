@@ -331,6 +331,18 @@ def test_page_uses_selects_and_fixed_grid(tmp_path) -> None:
     assert ".row .field label{height:20px" in PAGE_HTML, "标签要同高，输入框才会对齐"
 
 
+def test_sub_process_select_allows_empty_singleton_category() -> None:
+    """没有子类的品类（如「人员」）子类下拉的值就是空字符串，不能被 required 拦住。
+
+    2026-09-15 的 BUG：子类下拉带 `required`，而 `人员` 只有一个 value="" 的
+    「（无子类）」选项——浏览器把空值判定为"未选择"，直接拦下整张表单，
+    表现就是"选了人员，入库按钮点了没反应"。
+    """
+    assert "id='sub-process-select' required" not in PAGE_HTML, "子类可以为空，不能 required"
+    assert "<select name='sub_process' id='sub-process-select'>" in PAGE_HTML
+    assert "<select name='process' id='process-select' required>" in PAGE_HTML, "品类仍然必选"
+
+
 def test_state_exposes_category_options(tmp_path) -> None:
     app = make_app(tmp_path)
     categories = app.state()["categories"]
@@ -391,6 +403,86 @@ def test_upload_into_singleton_category_without_sub_process(tmp_path) -> None:
         tmp_path / "RAG知识库" / "图片描述" / "人员" / "00_汇总索引.md"
     ).read_text(encoding="utf-8")
     assert app.state()["capacity"]["available"] == 1
+
+
+# ---------- 通过 HTTP 走一遍"没有子类的品类"入库（2026-09-15 修复的 BUG） ----------
+
+
+def _serve(app) -> tuple[object, str, int, threading.Thread]:
+    server = create_server(app, port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, server.server_address[0], server.server_address[1], thread
+
+
+def test_http_singleton_category_keeps_manual_choice_and_ingests(tmp_path) -> None:
+    """页面发的是 `process=人员 & sub_process=`；描述看不出品类时也必须保住用户的选择。
+
+    修复前 `/api/describe` 会把空的子类改写成"未分类"，于是
+    `catalog.has("人员", "未分类")` 为假 → 用户手选的"人员"被丢掉 →
+    页面提示"没能判断出品类"，人也就卡在这儿入不了库。
+    """
+    app = make_app(
+        tmp_path,
+        threshold=1,
+        require_vision=True,
+        describer=StubDescriber(
+            summary="几名员工在厂区门口合影",
+            details="画面为多人合影，背景是厂区大门。",
+            keywords=("合影", "员工"),
+        ),
+    )
+    server, host, port, thread = _serve(app)
+    boundary = "----pulseSingleton"
+    data = b"\xff\xd8\xff\xe0staff"
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=5)
+        conn.request(
+            "POST",
+            "/api/describe",
+            body=_multipart_body(
+                boundary, {"process": "人员", "sub_process": ""}, "IMG_STAFF.jpg", data
+            ),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        described = json.loads(conn.getresponse().read().decode("utf-8"))
+        assert described["ok"] is True
+        assert described["process"] == "人员", "用户手选的品类不能被丢掉"
+        assert described["sub_process"] == ""
+        assert described["category_source"] == "manual"
+        ticket = described["vision_ticket"]
+        assert ticket
+
+        conn.request(
+            "POST",
+            "/api/assets",
+            body=_multipart_body(
+                boundary,
+                {
+                    "process": "人员",
+                    "sub_process": "",
+                    "keywords": "合影, 员工",
+                    "summary": "几名员工在厂区门口合影",
+                    "vision_ticket": ticket,
+                },
+                "IMG_STAFF.jpg",
+                data,
+            ),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        response = conn.getresponse()
+        stored = json.loads(response.read().decode("utf-8"))
+        assert response.status == 200, stored
+        assert stored["ok"] is True
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    rag = tmp_path / "RAG知识库" / "图片描述"
+    assert (rag / "人员" / "IMG_STAFF.md").is_file(), "描述要落在 人员 目录下"
+    assert not (rag / "人员" / "未分类").exists(), "不能凭空造出「未分类」子类"
+    assert (tmp_path / "菲美得产品图片" / "人员" / "IMG_STAFF.jpg").is_file()
 
 
 # ---------- 按平台召回 ----------
