@@ -1,6 +1,6 @@
-# 媒体资产库与召回策略契约 v1.7.1
+# 媒体资产库与召回策略契约 v1.7.2
 
-> 所有者：root　｜　冻结日期：2026-09-11　｜　最近升版：2026-09-15（v1.7.1）　｜　实现：`pulse/services/media/`
+> 所有者：root　｜　冻结日期：2026-09-11　｜　最近升版：2026-09-15（v1.7.2）　｜　实现：`pulse/services/media/`
 > 关联：`AGENTS.md` §3 铁律、`pulse/contracts/INTERFACES.md`（发布契约）
 
 本契约定义**素材入库**与**素材召回**两条链路。发布契约（INTERFACES.md）仍然有效，
@@ -214,7 +214,7 @@
 | 方法 | 路径 | 语义 |
 | --- | --- | --- |
 | GET | `/` | 素材库页面（容量横幅、上传表单、按平台召回、素材清单） |
-| GET | `/api/state` | 素材清单 + 容量报告 + 每张图冷却状态 + 可选品类 `categories` + 平台清单 `platforms` |
+| GET | `/api/state` | 素材清单 + 容量报告 + 每张图冷却状态 + 可选品类 `categories` + 平台清单 `platforms` + 运行版本 `version`（启动器据此判断端口上是不是同一版代码） |
 | POST | `/api/describe` | multipart（`file`、`process`、`sub_process`）→ 自动描述 + 品类判定 + 入库凭据 `vision_ticket` |
 | POST | `/api/assets` | multipart 上传入库（`file`、`process`、`sub_process`、`keywords`、`summary`、`details`、`vision_ticket`） |
 | POST | `/api/usage` | 标记素材已用于内容 / 发布（`asset_id`、可选 `content_id`） |
@@ -233,6 +233,7 @@
 
 | 版本 | 日期 | 变更 |
 | --- | --- | --- |
+| 1.7.2 | 2026-09-15 | `/api/state` 增加 `version` 字段；配套修掉启动器"双击两次留下两个控制台"的缺陷——Windows 的 `SO_REUSEADDR` 让第二个进程照样 bind 成功，于是旧进程继续吐旧页面（这才是"代码改了页面没变"的真正原因） |
 | 1.7.1 | 2026-09-15 | 修正 B7 的落地缺陷：控制台把"空的 sub_process"改写成"未分类"，导致「人员」这类**没有子类的品类**既过不了前端校验（子类下拉曾被 `required`）、也保不住用户手选的品类；现按 §2.7 原样透传空子类，前端不再要求子类必选 |
 | 1.7 | 2026-09-14 | 新增 B5.3：`.psd/.psb` 设计稿按图片入库（`MAX_PSD_BYTES` 200 MB），用标准库解合并图 → PNG 送识别 / 预览 / 导出；导出同时给原稿与 PNG；不支持的子集抛 `UnsupportedPsdError` 并说明原因 |
 | 1.6 | 2026-09-13 | B1 明确"导出即触发冷却"：`/api/export` 成功后按**实际复制成功**的素材写台账（`content_id` = 导出目录名，同一次导出幂等），没进包的素材不记；返回值新增 `used` / `cooldown_days`；B12 同步该口径 |

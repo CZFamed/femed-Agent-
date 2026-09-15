@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from pulse import __version__
 from pulse.services.media.catalog import MediaAsset, load_catalog
 from pulse.services.media.categories import (
     CategoryCatalog,
@@ -633,6 +634,9 @@ class MediaConsoleApp:
             )
         return {
             "brand": capacity.brand,
+            # 版本号给启动器用：它据此判断"端口上那个控制台是不是同一版代码"，
+            # 避免双击两次留下两个监听同一端口的旧进程（2026-09-15 的真实事故）。
+            "version": __version__,
             "config": {
                 "cooldown_days": self.config.cooldown_days,
                 "capacity_red_threshold": self.config.capacity_red_threshold,

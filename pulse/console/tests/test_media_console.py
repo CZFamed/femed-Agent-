@@ -115,6 +115,13 @@ def test_state_reports_red_alert_when_capacity_is_low(tmp_path) -> None:
     assert state["brand"] == "沧州菲美得"
 
 
+def test_state_exposes_running_version(tmp_path) -> None:
+    """启动器靠这个字段判断"端口上那个控制台是不是同一版代码"。"""
+    import pulse
+
+    assert make_app(tmp_path).state()["version"] == pulse.__version__
+
+
 def test_upload_then_recall_then_mark_used(tmp_path) -> None:
     app = make_app(tmp_path, threshold=1)
     result = app.upload(

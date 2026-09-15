@@ -7,12 +7,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import socket
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from pulse import __version__ as PULSE_VERSION
 from pulse.console.media_console import MediaConsoleApp, create_server
 from pulse.services.media.config import BRAND_NAME
 
@@ -69,16 +73,105 @@ def resolve_paths(
 
 
 def pick_port(preferred: int = DEFAULT_PORT, host: str = DEFAULT_HOST) -> int:
-    """优先用 preferred；被占用时由系统分配一个空闲端口。"""
-    with socket.socket() as probe:
-        try:
-            probe.bind((host, preferred))
-            return int(probe.getsockname()[1])
-        except OSError:
-            pass
+    """优先用 preferred；**确实被人占着**时由系统分配一个空闲端口。
+
+    ⚠ 不能只靠 bind 试探：Windows 上先启动的服务带 ``SO_REUSEADDR``，
+    第二个进程照样能 bind 成功——2026-09-15 就是这么出现"两个控制台同时监听
+    8765"的，页面命中哪个全看运气，于是"代码改了但页面还是旧的"。
+    所以先 connect 一次：连得上就说明真有人占着，直接换端口。
+    """
+    if not _has_listener(host, preferred):
+        with socket.socket() as probe:
+            try:
+                probe.bind((host, preferred))
+                return int(probe.getsockname()[1])
+            except OSError:
+                pass
     with socket.socket() as probe:
         probe.bind((host, 0))
         return int(probe.getsockname()[1])
+
+
+def _open_browser(url: str) -> None:
+    """打开浏览器；打不开只提示，不影响服务。"""
+    try:
+        import webbrowser
+
+        webbrowser.open(url)
+    except Exception:  # pragma: no cover - 浏览器不可用不影响服务
+        print("浏览器未自动打开，请手动复制上面的地址到浏览器。")
+
+
+def _has_listener(host: str, port: int, *, timeout: float = 0.4) -> bool:
+    """该端口上是否已经有人在监听（connect 成功即视为占用）。"""
+    if port <= 0:
+        return False
+    with socket.socket() as probe:
+        probe.settimeout(timeout)
+        try:
+            probe.connect((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def probe_running_console(
+    host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, timeout: float = 1.5
+) -> str | None:
+    """看这个端口上是不是已经跑着我们自己的控制台；是就返回它的版本号。
+
+    返回 ``None`` 表示端口上没有人，或者占着它的是别的程序（不能乱认）。
+    老版本控制台的 ``/api/state`` 里没有 ``version`` 字段，会返回空字符串——
+    这正好用来提示"旧窗口还开着"。
+    """
+    if port <= 0:
+        return None
+    try:
+        with urllib.request.urlopen(
+            f"http://{host}:{port}/api/state", timeout=timeout
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return None
+    if not isinstance(payload, dict) or "capacity" not in payload or "brand" not in payload:
+        return None
+    return str(payload.get("version") or "")
+
+
+def plan_start(
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    *,
+    current_version: str = PULSE_VERSION,
+    probe=probe_running_console,
+) -> tuple[bool, int, str]:
+    """决定"复用已有控制台"还是"另起一个"。
+
+    返回 ``(reuse, port, message)``：
+
+    - 端口空着 → ``(False, port, "")``，照常启动；
+    - 端口上已经是**同一版**控制台 → ``(True, port, 提示)``：只打开浏览器，
+      不再起第二个进程（双击两次不会留下两个旧进程）；
+    - 端口上是**旧版**控制台 → ``(False, 0, 提示)``：在新端口启动最新版，
+      并明确告诉用户把旧窗口关掉。
+    """
+    running = probe(host, port)
+    if running is None:
+        return False, port, ""
+    if running == current_version:
+        return (
+            True,
+            port,
+            f"素材库控制台已经在运行（端口 {port}，版本 {running}）：已直接打开页面，"
+            "不用再开第二个窗口。",
+        )
+    shown = running or "未知（老版本没有版本号）"
+    return (
+        False,
+        0,
+        f"检测到旧版本控制台还开着（版本 {shown}，现在这版是 {current_version}）："
+        "本次会在**新端口**启动最新版。请把旧的黑窗口关掉，避免两个窗口同时开着。",
+    )
 
 
 def build_url(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> str:
@@ -217,6 +310,7 @@ def run(
     print(RULE)
     print("  Pulse 素材库控制台")
     print(f"  品牌：{BRAND_NAME}")
+    print(f"  版本：{PULSE_VERSION}")
     print(RULE)
     if not paths.ready:
         print("启动失败：没有找到下面这些文件夹——")
@@ -225,8 +319,19 @@ def run(
         print("请确认拷贝的是完整文件夹（应包含 RAG知识库 及其上一层的 菲美得产品图片）。")
         return 2
 
+    reuse, start_port, message = plan_start(host, port)
+    if message:
+        print(message)
+    if reuse:
+        url = build_url(host, start_port)
+        print(f"  访问地址：{url}")
+        print(RULE)
+        if open_browser:
+            _open_browser(url)
+        return 0
+
     app = build_app(paths)
-    server = _open_server(app, host, port)
+    server = _open_server(app, host, start_port)
     actual_port = int(server.server_address[1])
     url = build_url(host, actual_port)
     capacity = app.state()["capacity"]
@@ -244,12 +349,7 @@ def run(
     print(RULE)
 
     if open_browser:
-        try:
-            import webbrowser
-
-            webbrowser.open(url)
-        except Exception:  # pragma: no cover - 浏览器不可用不影响服务
-            print("浏览器未自动打开，请手动复制上面的地址到浏览器。")
+        _open_browser(url)
     try:
         server.serve_forever()
     except KeyboardInterrupt:  # pragma: no cover - 手工关闭窗口
