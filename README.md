@@ -1,6 +1,6 @@
 # Pulse — 海外社媒内容 Agent（B2B 工业铸件出海）
 
-**当前版本：V1.12.0**（接口契约 v1.1 / 媒体库契约 v1.5）
+**当前版本：V1.15.2**（接口契约 v1.1 / 媒体库契约 v1.7.2）
 
 为**菲美得**构建的多平台社媒内容生成与自动发布 Agent。业务基线是 B2B 工业铸件出海：
 客户为**无自有铸造厂的海外机床整机厂**（印度为主，美国 / 台湾次之），
@@ -14,15 +14,15 @@
 
 | 项 | 取值 | 真源 |
 | --- | --- | --- |
-| 产品版本 | **1.12.0** | `pyproject.toml` + `pulse.__version__` |
+| 产品版本 | **1.15.2** | `pyproject.toml` + `pulse.__version__` |
 | 接口契约版本 | **1.1**（冻结） | `pulse.shared.CONTRACT_VERSION` |
-| 媒体库契约版本 | **1.5**（冻结） | `pulse/contracts/MEDIA_LIBRARY.md` |
+| 媒体库契约版本 | **1.7.2**（冻结） | `pulse/contracts/MEDIA_LIBRARY.md` |
 | 版本策略 | 语义化版本 `MAJOR.MINOR.PATCH` | 见 §5 |
 | 变更记录 | 逐版本追加 | `CHANGELOG.md` |
 
 ```powershell
 & ".venv\Scripts\python.exe" -c "import pulse; print(pulse.__version__, pulse.__contract_version__)"
-# 1.12.0 1.1
+# 1.15.2 1.1
 ```
 
 ---
@@ -63,13 +63,16 @@ uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 | --- | --- |
 | `pulse/contracts/` | 工程接口契约（冻结，只读） |
 | `pulse/shared/` | 跨域共用类型与契约基线测试 |
-| `pulse/services/content/` | 内容生产域 |
-| `pulse/services/publish/` | 发布网关域 |
-| `pulse/services/scheduler/`、`pulse/services/identity/` | 调度域、账号与凭据域 |
-| `pulse/services/compliance/` | 合规与治理域 |
-| `pulse/api/`、`pulse/console/` | 接口层与控制台 |
-| `pulse/tests/` | 跨域契约 / 集成 / 风控测试 |
+| `pulse/services/publish/` | 发布网关域（**已交付**，80 项单测） |
+| `pulse/services/media/` | 媒体资产域：素材入库 / 查重 / 召回 / 导出 / 按平台短文（**已交付**，161 项单测） |
+| `pulse/console/` | 素材库图形化控制台（**已交付**，87 项单测） |
 | `pulse/docs/`、`pulse/tasks/` | 治理文档与任务板 |
+
+**尚未开工的目录**（契约与派工单已定义，但仓库里还没有代码，不要以为已经存在）：
+`pulse/services/content/`（A1 内容生产）、`pulse/services/scheduler/` 与
+`pulse/services/identity/`（A3 调度与账号）、`pulse/services/compliance/`（A4 合规）、
+`pulse/api/`（A5 接口与控制台）、`pulse/tests/`（A6 跨域验证）。
+现状与依据见 `pulse/tasks/TASKS.md` 的「当前状态」一节。
 
 ### 3.1 仓库边界
 
@@ -79,9 +82,9 @@ uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 | 位置 | 内容 | 是否入库 |
 | --- | --- | --- |
 | `agent/` | 代码、契约、治理文档、CI | **是**（仓库根） |
-| `agent/RAG知识库/` | 素材描述索引（**318 份素材描述** + 13 份汇总索引，共 331 个 `.md`），供内容域按语义选素材 | 否（体积大） |
+| `agent/RAG知识库/` | 素材描述索引（**463 份素材描述** + 24 份汇总索引，共 487 个 `.md`），供内容域按语义选素材 | 否（体积大） |
 | `agent/.venv/` | 本地 Python 解释器（唯一可用） | 否 |
-| `../菲美得产品图片/` | 实拍素材 **342 个文件**（299 图 + 19 视频 + 说明文档），产品图唯一来源 | 否（在仓库外） |
+| `../菲美得产品图片/` | 实拍素材 **470 个文件**（418 图 + 22 视频 + 29 个 `.psd` 设计稿 + 1 个说明脚本），产品图唯一来源 | 否（在仓库外） |
 | `../外贸公司/` | 客群调研与业务资料 | 否（在仓库外） |
 
 > 内容域引用素材时，路径基准是**工作区**而不是仓库根：`../菲美得产品图片/…`。
@@ -103,16 +106,20 @@ uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 
 发布版本使用**带注释标签**，前缀 `v`：
 
-标签与 `pyproject.toml` 的 `version` 保持一致，形如 `v1.8.0`。
+标签与 `pyproject.toml` 的 `version` 保持一致，形如 `v1.15.2`。
+
+> ⚠️ 当前（2026-09-17）标签只打到 **`v1.13.0`**：1.14.0 / 1.15.0 / 1.15.1 / 1.15.2 四个版本
+> 已写入三处版本号但**没有打标签**，1.15.2 也尚未推送。下面的命令以实际存在的标签为准，
+> 待补标签的清单见 `pulse/tasks/TASKS.md` →「版本管理」。
 
 ```powershell
 git tag -l --format='%(refname:short)  %(subject)'
-git show v1.12.0 --stat --no-patch
+git show v1.13.0 --stat --no-patch
 ```
 
 ### 4.3 提交消息约定
 
-`<范围>: <动作> <对象>`，范围用波次或域：`W1` / `contract` / `publish` / `scheduler` / `content` / `ci`。
+`<范围>: <动作> <对象>`，范围用波次或域：`W1` / `contract` / `publish` / `media` / `console` / `ci`。
 
 ```
 W1: A2 发布网关域交付（80 测试通过）+ 治理补强
@@ -164,10 +171,10 @@ TLS 若报 `schannel: AcquireCredentialsHandle failed`，改用 OpenSSL 后端�
 3. 提交、打标签、推送：
 
    ```powershell
-   git commit -am "release: V1.12.0"
-   git tag -a v1.12.0 -m "V1.12.0 — 先查重再识别"
+   git commit -am "release: V1.15.2"
+   git tag -a v1.15.2 -m "V1.15.2 — 修复启动器双实例"
    git push origin main --follow-tags
-```
+   ```
 
 版本号升级口径：**契约冻结或对外行为不兼容** → 升 `MAJOR`；**向后兼容的新增** → 升 `MINOR`；
 **修缺陷** → 升 `PATCH`。

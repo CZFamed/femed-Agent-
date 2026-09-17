@@ -41,12 +41,19 @@
 5. `pulse/docs/多Agent协同开发方案.md` — 分工原理与波次设计
 6. `pulse/docs/dispatch/` — **子 agent 派工单（执行层）**：开工前读自己那份
 7. `pulse/tasks/TASKS.md` — 任务板与状态
+8. `pulse/docs/references/README.md` — 外部依据文档归档台账
+   （**其中《菲美得_四平台推荐风格与方式报告_v1.md》目前缺失**，见该文件）
 
 ---
 
 ## 2. 目录所有权（硬约束）
 
 每个目录有唯一所有者。**只写自己的目录，不写别人的。**
+
+> **开工前先看代码是否存在（2026-09-17 核实）**：下表里 A1 / A3 / A4 / A5 / A6 的目录
+> **目前都还没有代码**，仓库里实际存在的只有 `pulse/shared/`、`pulse/services/publish/`、
+> `pulse/services/media/`、`pulse/console/` 与它们各自的测试。
+> 现状与证据见 `pulse/tasks/TASKS.md`「当前状态」一节；不要按"已经做完"来假设。
 
 | 目录 | 所有者 | 说明 |
 | --- | --- | --- |
@@ -147,7 +154,7 @@ spawn 时使用固定任务名，便于 root 定位与升级：
 | `agent/` | 代码、契约、治理文档、CI（仓库根） | 是 |
 | `agent/RAG知识库/` | 素材描述索引，内容域选素材用 | 否 |
 | `agent/.venv/` | 唯一可用的 Python 解释器 | 否 |
-| `..\菲美得产品图片\` | 实拍素材（341 个文件，其中图片 314 / 视频 19），产品图唯一来源 | 否（仓库外） |
+| `..\菲美得产品图片\` | 实拍素材（**470 个文件**：图片 418 / 视频 22 / `.psd` 设计稿 29 / 说明脚本 1），产品图唯一来源 | 否（仓库外） |
 | `..\外贸公司\` | 客群调研与业务资料 | 否（仓库外） |
 
 引用素材时基准是**工作区**（`..\菲美得产品图片\…`），不是仓库根。
@@ -188,7 +195,8 @@ uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 
 ### 5.4 已验证的基线
 
-**基线测试已存在且全绿**：`pulse/shared/tests/test_contract_baseline.py`（21 项，root 所有）。
+**基线测试已存在且全绿**：`pulse/shared/tests/` 共 **26 项**，均属 root 所有——
+`test_contract_baseline.py` **21 项**（契约语义）+ `test_release_version.py` **5 项**（三处版本号一致性）。
 
 覆盖：`Platform` 白名单（**VK 已入枚举，TikTok 不得进入**）、`scheduled_at` 时区偏移、LinkedIn / YouTube / VK 必填
 `options`、素材 `license_status`（禁止 `pending` 发布）、`compliance.blocked` 硬拦截、hashtag 规范、
@@ -198,11 +206,27 @@ uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 & "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe" -m pytest -p no:cacheprovider pulse/shared/tests
 ```
 
+**全仓测试基线（2026-09-17 实测）：354 项全绿**，分布如下。这里只有**域内单测**，
+跨域集成与风控演练（A6，`pulse/tests/`）仍未开工。
+
+| 位置 | 数量 |
+| --- | --- |
+| `pulse/shared/tests/`（root） | 26 |
+| `pulse/services/publish/tests/`（A2） | 80 |
+| `pulse/services/media/tests/` | 161 |
+| `pulse/console/tests/` | 87 |
+
+```powershell
+& "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe" -m pytest -p no:cacheprovider
+# 354 passed
+```
+
 若你的改动让这些校验失败，**先怀疑自己的实现，不要改 `pulse/shared/`**（属 root 所有）。
 确信某条断言与 `contracts/INTERFACES.md` 冲突 → 消息 root，附契约条款编号。
 
 > **历史澄清（避免再次误传）**：本文曾写"`pulse/shared/` 已通过 16 项校验"，但当时仓库中并不存在测试文件；
-> 随后又被改写成"当前没有任何自动化测试"。两者都不准确。**以上面这段为准**——基线是 21 项（v1.1 版），位置在
+> 随后又被改写成"当前没有任何自动化测试"。两者都不准确。**以上面这段为准**——契约基线是 21 项（v1.1 版）、
+> 加上版本守护共 26 项（2026-09-17 起），位置在
 > `pulse/shared/tests/`，且属于 root 自己的域（各域单测仍在 `pulse/services/<域>/tests/`，A6 的跨域测试在 `pulse/tests/`）。
 
 ---
