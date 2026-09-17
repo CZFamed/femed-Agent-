@@ -42,7 +42,9 @@
 6. `pulse/docs/dispatch/` — **子 agent 派工单（执行层）**：开工前读自己那份
 7. `pulse/tasks/TASKS.md` — 任务板与状态
 8. `pulse/docs/references/README.md` — 外部依据文档归档台账
-   （**其中《菲美得_四平台推荐风格与方式报告_v1.md》目前缺失**，见该文件）
+   （《菲美得_四平台推荐风格与方式报告_v1.md》曾一度丢失，**2026-09-17 已补档**，
+   `platforms.py` 的 `REPORT_REFERENCE` 指向工作区 `菲美得产品图片/` 下的该文件，勿移动或改名；
+   另有配套的《…运营风格与方式报告_v1.md》回答"账号怎么运营"）
 
 ---
 

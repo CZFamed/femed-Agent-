@@ -108,13 +108,13 @@ uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 
 标签与 `pyproject.toml` 的 `version` 保持一致，形如 `v1.15.2`。
 
-> ⚠️ 当前（2026-09-17）标签只打到 **`v1.13.0`**：1.14.0 / 1.15.0 / 1.15.1 / 1.15.2 四个版本
-> 已写入三处版本号但**没有打标签**，1.15.2 也尚未推送。下面的命令以实际存在的标签为准，
-> 待补标签的清单见 `pulse/tasks/TASKS.md` →「版本管理」。
+> 复核记录：2026-09-17 曾发现标签只到 `v1.13.0`（1.14.0–1.15.2 四个版本漏打、1.15.2 未推送），
+> **当日已补打四个带注释标签并推送**，现最新标签为 `v1.15.2`。补打时逐条核对了
+> 「提交内容 ↔ `pyproject.toml` ↔ CHANGELOG」三者一致，过程记录见 `pulse/tasks/TASKS.md` →「版本管理」。
 
 ```powershell
 git tag -l --format='%(refname:short)  %(subject)'
-git show v1.13.0 --stat --no-patch
+git show v1.15.2 --stat --no-patch
 ```
 
 ### 4.3 提交消息约定
