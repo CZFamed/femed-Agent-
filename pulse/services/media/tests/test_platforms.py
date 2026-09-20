@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from pulse.services.media.catalog import MediaAsset
 from pulse.services.media.platforms import (
+    MATCH_LEVELS,
     PLATFORM_PROFILES,
     PlatformProfile,
     ShotSlot,
+    level_label,
     platform_choices,
     platform_profile,
     prefer_media_kind,
+    slot_pools,
     slot_score,
     top_tier,
+    weakest_level,
 )
 
 
@@ -132,6 +136,65 @@ def test_profile_payload_is_serialisable() -> None:
     ).as_payload()
     assert payload["slot_count"] == 1
     assert payload["key"] == "k"
+
+
+# ---------- 位次补足阶梯（2026-09-20：解决"一堆图却一张也召回不来"） ----------
+
+
+def test_slot_pools_go_from_strict_to_whole_library() -> None:
+    slot = ShotSlot(
+        order=1, role="x", processes=("铸件",), keywords=("阀体", "灰铁")
+    )
+    assets = [
+        make_asset("hit.jpg", process="铸件", keywords=("阀体", "灰铁")),
+        make_asset("weak.jpg", process="铸件", keywords=("机加工",), summary="只有一件工件"),
+        make_asset("other.jpg", process="加工件", keywords=("阀体",)),
+    ]
+    pools = dict(slot_pools(slot, assets))
+    assert list(pools) == [key for key, _label in MATCH_LEVELS], "档位顺序即放宽顺序"
+    assert [a.file_name for _s, a in pools["strict"]] == ["hit.jpg"]
+    assert [a.file_name for _s, a in pools["same_category"]] == ["hit.jpg"]
+    # 同品类但不限关键词 → 该品类的都进来
+    assert {a.file_name for _s, a in pools["category_any_keyword"]} == {"hit.jpg", "weak.jpg"}
+    # 全库 → 连别品类的也进来（否则窄位次永远凑不齐）
+    assert {a.file_name for _s, a in pools["whole_library"]} == {
+        "hit.jpg",
+        "weak.jpg",
+        "other.jpg",
+    }
+
+
+def test_slot_pools_respect_media_kind_when_possible() -> None:
+    slot = ShotSlot(order=1, role="x", media_kind="video")
+    assets = [make_asset("v.mp4"), make_asset("p.jpg")]
+    pools = dict(slot_pools(slot, assets))
+    assert [a.file_name for _s, a in pools["whole_library"]] == ["v.mp4"]
+
+
+def test_weakest_level_returns_loosest_used() -> None:
+    assert weakest_level(["strict"]) == "strict"
+    assert weakest_level(["strict", "same_category"]) == "same_category"
+    assert weakest_level(["whole_library", "strict"]) == "whole_library"
+    assert weakest_level([]) == ""
+    assert weakest_level(["不存在的档位"]) == ""
+
+
+def test_level_label_is_chinese() -> None:
+    assert level_label("strict") == "精准匹配"
+    assert "放宽" in level_label("same_category")
+    assert level_label("") == ""
+
+
+def test_whole_library_pool_covers_assets_outside_slot_categories() -> None:
+    """窄位次（比如"三维扫描"只有两张）也必须能靠全库档补齐数量。"""
+    slot = ShotSlot(order=1, role="检测", processes=("铸件",), keywords=("三维扫描",))
+    assets = [make_asset("scan.jpg", process="铸件", keywords=("三维扫描",))]
+    assets += [
+        make_asset(f"other{i}.jpg", process="厂区_场景", keywords=("厂房",)) for i in range(8)
+    ]
+    pools = dict(slot_pools(slot, assets))
+    assert len(pools["strict"]) == 1, "精准匹配只有一张"
+    assert len(pools["whole_library"]) == 9, "全库档能补齐剩下的"
 
 
 # ---------- 2026-09-14 素材库品类调整后的位次口径 ----------

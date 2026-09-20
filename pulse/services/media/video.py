@@ -64,7 +64,14 @@ class VideoInfo:
 
 
 def ffmpeg_executable() -> str | None:
-    """按优先级找 ffmpeg：环境变量 → imageio-ffmpeg 自带 → PATH。"""
+    """按优先级找 ffmpeg：环境变量 → imageio-ffmpeg 自带 → PATH。
+
+    不能只依赖 ``imageio_ffmpeg.get_ffmpeg_exe()``：它内部靠"试跑一次
+    ``ffmpeg -version``"来判定二进制是否可用，而那次探测会被杀软/沙箱偶然拦住；
+    一旦失败，它带 ``lru_cache`` 会把结果记一整个进程，
+    于是整个控制台进程都以为"没有 ffmpeg"、视频再也入不了库（2026-09-20 实测）。
+    所以这里额外**按路径**找一遍自带二进制，不受那次探测影响。
+    """
     override = os.environ.get("PULSE_FFMPEG")
     if override and Path(override).is_file():
         return override
@@ -74,7 +81,27 @@ def ffmpeg_executable() -> str | None:
         return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:  # noqa: BLE001 - 没装依赖不是致命错误，还要退回 PATH
         pass
+    bundled = _bundled_ffmpeg()
+    if bundled:
+        return bundled
     return shutil.which("ffmpeg")
+
+
+def _bundled_ffmpeg() -> str | None:
+    """直接在 imageio-ffmpeg 的 binaries 目录里找自带二进制（不做试跑探测）。"""
+    try:
+        import imageio_ffmpeg
+    except Exception:  # noqa: BLE001
+        return None
+    module_dir = Path(getattr(imageio_ffmpeg, "__file__", "") or "").parent
+    binary_dir = module_dir / "binaries"
+    if not binary_dir.is_dir():
+        return None
+    candidates = sorted(binary_dir.glob("ffmpeg-*")) + sorted(binary_dir.glob("ffmpeg.exe"))
+    for path in candidates:
+        if path.is_file():
+            return str(path)
+    return None
 
 
 def _require_ffmpeg() -> str:

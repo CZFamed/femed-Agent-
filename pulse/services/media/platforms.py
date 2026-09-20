@@ -345,3 +345,79 @@ def top_tier(
     if best <= 0:
         return candidates
     return [item for item in candidates if item[0] >= best * ratio]
+
+
+# --------------------------------------------------------------------------
+# 位次补足阶梯
+# --------------------------------------------------------------------------
+
+#: 由"精准"到"全库"的候选池阶梯。顺序即放宽顺序，调用方逐级补足数量。
+#:
+#: 起因（2026-09-20）：四道闸（品类 → 关键词 → 同档 95% → 冷却）叠在一起后，
+#: 库里 468 张图，LinkedIn 四个位次只出得来 1 张——"一堆图却一张也召回不来"。
+#: 现在改为：先用最精准的池子挑；不够就逐级放宽到同品类、再到全库。
+#: **冷却始终不动**（契约 B1/B12：进了冷却就是 15 天，不因为凑数而破例），
+#: 每一张都标注它是哪一档挑出来的，让人知道"这张是正牌的还是放宽来的"。
+MATCH_LEVELS: tuple[tuple[str, str], ...] = (
+    ("strict", "精准匹配"),
+    ("same_category", "放宽：同品类（去掉同档限制）"),
+    ("category_any_keyword", "放宽：同品类（不限关键词）"),
+    ("whole_library", "放宽：全库"),
+)
+
+#: 档位 key → 中文说明
+MATCH_LEVEL_LABELS: dict[str, str] = dict(MATCH_LEVELS)
+
+#: 需要在页面上特别提示的档位（都不是"精准匹配"）
+RELAXED_LEVELS: frozenset[str] = frozenset(
+    {"same_category", "category_any_keyword", "whole_library"}
+)
+
+
+def _in_category(slot: ShotSlot, asset: MediaAsset) -> bool:
+    """位次是否允许这个顶层品类（空表示不限）。"""
+    return not slot.processes or asset.process in slot.processes
+
+
+def slot_pools(
+    slot: ShotSlot,
+    assets: list[MediaAsset],
+    *,
+    extra_terms: tuple[str, ...] = (),
+) -> list[tuple[str, list[tuple[float, MediaAsset]]]]:
+    """按"精准 → 宽松"给出这个位次的候选池，供调用方逐级补足数量。
+
+    返回 ``[(档位 key, [(得分, 素材), ...]), ...]``，严格在前、兜底在后。
+    最后两档（全库）刻意用统一分值：这一步已经放弃题材匹配，
+    排序交给新图加权与加权随机即可。
+    """
+    in_category = [asset for asset in assets if _in_category(slot, asset)]
+    keyword_hits = [
+        (score, asset)
+        for score, asset in (
+            (slot_score(slot, asset, extra_terms=extra_terms), asset)
+            for asset in in_category
+        )
+        if score > 0
+    ]
+    flat_category = [(0.5, asset) for asset in in_category]
+    flat_all = [(0.5, asset) for asset in assets]
+    return [
+        ("strict", prefer_media_kind(slot, top_tier(keyword_hits))),
+        ("same_category", prefer_media_kind(slot, keyword_hits)),
+        ("category_any_keyword", prefer_media_kind(slot, flat_category)),
+        ("whole_library", prefer_media_kind(slot, flat_all)),
+    ]
+
+
+def weakest_level(levels: list[str]) -> str:
+    """一批召回里用到的最宽松档位——页面据此判断"这一格是否需要补拍"。"""
+    order = [key for key, _label in MATCH_LEVELS]
+    known = [level for level in levels if level in order]
+    if not known:
+        return ""
+    return max(known, key=order.index)
+
+
+def level_label(level: str) -> str:
+    return MATCH_LEVEL_LABELS.get(level, level or "")

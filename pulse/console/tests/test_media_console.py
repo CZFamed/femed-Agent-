@@ -565,19 +565,46 @@ def test_recall_by_platform_matches_each_slot(tmp_path) -> None:
     assert result["count"] == len(result["picks"])
 
 
-def test_recall_by_platform_reports_empty_slots(tmp_path) -> None:
-    """没有合适素材的位次要明确留空，让页面提示补拍，而不是随便凑一张。"""
+def test_recall_fills_every_slot_when_library_has_enough_material(tmp_path) -> None:
+    """库里有料就必须每格都出图——逐级放宽补足数量。
+
+    2026-09-20 改：原先"位次挑不到就留空"，叠加同档阈值（157 张砍到 4 张）
+    与冷却后，库里 468 张图、LinkedIn 四个位次只出得来 1 张——"一堆图却一张也召回不来"。
+    现在改为逐级放宽补足数量，同时在 `level` / `relaxed` 里如实标明档次，
+    不让人误以为放宽挑来的图是精准匹配。
+    """
+    app = make_app(tmp_path)
+    rag = app.rag_root
+    # 只有"阀体"一种题材：四个位次里只有部分能精准匹配，其余靠放宽补足
+    for index in range(6):
+        _write_description(
+            rag, "铸件", "阀体", f"IMG_V{index}.jpg",
+            ("阀体", "灰铁铸件"), f"第 {index} 件阀体铸件",
+        )
+    result = app.recall(platform="facebook", top_k=1)
+    assert result["requested"] == 4
+    assert result["count"] == 4, "库里有料，每格都要出图"
+    assert result["shortfall"] == 0
+
+    relaxed = [slot for slot in result["slots"] if slot["relaxed"]]
+    assert relaxed, "没有精准匹配的位次要标注为放宽"
+    assert all(slot["level"] != "strict" for slot in relaxed)
+    assert all(slot["picks"] for slot in result["slots"]), "放宽后仍应给出图，不能空着"
+    # 同一条素材不该在同一帖里被两个位次重复选中
+    ids = [pick["asset_id"] for pick in result["picks"]]
+    assert len(ids) == len(set(ids))
+
+
+def test_recall_reports_shortfall_when_library_is_too_small(tmp_path) -> None:
+    """素材真的不够时要如实报缺，而不是假装成功。"""
     app = make_app(tmp_path)
     _write_description(
-        app.rag_root, "铸件", "阀体", "IMG_ONLY.jpg", ("阀体", "灰铁铸件"), "一件阀体铸件"
+        app.rag_root, "铸件", "阀体", "IMG_ONLY.jpg", ("阀体", "灰铁铸件"), "唯一一件"
     )
     result = app.recall(platform="facebook", top_k=1)
-    by_order = {slot["order"]: slot for slot in result["slots"]}
-    # Facebook 第 2 位次要求"白模/发泡"，库里只有阀体 → 应为空
-    assert by_order[2]["picks"] == []
-    assert by_order[2]["matched"] == 0
-    assert by_order[2]["blocked_by_cooldown"] is False, "本来就没这种素材，不是被冷却挡住"
-    assert "补拍" not in by_order[2]["role"], "提示语由页面负责，接口只给空结果"
+    assert result["count"] < result["requested"], "只有一张图，填不满四格"
+    assert result["shortfall"] == result["requested"] - result["count"]
+    assert any(slot["picks"] for slot in result["slots"]), "至少给出库里有的那张"
 
 
 def test_empty_slot_distinguishes_cooldown_from_missing(tmp_path) -> None:

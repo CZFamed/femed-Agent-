@@ -113,13 +113,19 @@ class RecallPolicy:
         *,
         top_k: int | None = None,
         now: datetime | None = None,
+        respect_cooldown: bool = True,
     ) -> list[RecallPick]:
-        """过滤冷却中的素材后，做无放回加权随机采样。"""
+        """过滤冷却中的素材后，做无放回加权随机采样。
+
+        ``respect_cooldown=False`` 只在**兜底档**用：当所有候选都在冷却期、
+        再不放行就一张图都出不来时，才由调用方显式让冷却让路，并把这件事标出来。
+        正常召回一律保持 ``True``。
+        """
         limit = top_k or self.config.top_k
         reference = now or datetime.now(timezone.utc)
         scored: list[tuple[float, MediaCandidate, float]] = []
         for candidate in candidates:
-            if self.is_cooling(candidate.asset, now=reference):
+            if respect_cooldown and self.is_cooling(candidate.asset, now=reference):
                 continue
             weight = self.weight(candidate, now=reference)
             if weight <= 0.0:

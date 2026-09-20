@@ -68,11 +68,15 @@ from pulse.services.media.psd import (
 )
 from pulse.services.media.policy import MediaCandidate, RecallPolicy
 from pulse.services.media.platforms import (
+    RELAXED_LEVELS,
+    level_label,
     platform_choices,
     platform_profile,
     prefer_media_kind,
+    slot_pools,
     slot_score,
     top_tier,
+    weakest_level,
 )
 from pulse.services.media.registry import DEFAULT_REGISTRY_NAME, MediaRegistry
 
@@ -198,6 +202,7 @@ PAGE_HTML = (
     "<button type='submit'>执行召回</button></div>"
     "</div></form>"
     "<div class='hint' id='platform-summary'></div>"
+    "<div class='hint' id='recall-shortfall'></div>"
     "<div id='recall-result'></div>"
     "<div class='export-bar'>"
     "<button type='button' id='export-btn' disabled>导出这一帖的素材</button>"
@@ -454,8 +459,17 @@ PAGE_HTML = (
     "?\"<p class='muted'>这一格有符合的素材，但都在 15 天冷却期内，暂时不能用。"
     "可以先换别的图，或等冷却结束。</p>\""
     ":\"<p class='muted'>这一格还没有合适的素材，建议按这个位次补拍。</p>\");"
+    # 匹配档次：让人一眼看出这张是"精准匹配"还是"放宽补位"，别把凑数的当成正牌货
+    "var lv=s.level_label?(\"<p class='hint\"+(s.relaxed?' bad':'')+\"'>匹配：\""
+    "+esc(s.level_label)+\"（精准候选 \"+s.matched+\" 张 / 全库 \"+s.available+\" 张）\""
+    "+(s.relaxed?(\"　—— 这一格没有精准素材，这张是放宽补位，建议补拍。\"):'')+\"</p>\"):'';"
     "return \"<div class='slot'><h3>\"+esc(s.role)+\"</h3>\""
-    "+(s.note?(\"<p class='muted'>\"+esc(s.note)+\"</p>\"):'')+body+'</div>';}).join('');"
+    "+(s.note?(\"<p class='muted'>\"+esc(s.note)+\"</p>\"):'')+lv+body+'</div>';}).join('');"
+    "var box=document.getElementById('recall-shortfall');"
+    "if(d.shortfall>0){box.className='hint bad';"
+    "box.textContent='⚠ 本次只召回到 '+d.count+' / '+d.requested"
+    "+' 张：素材不够（可能都在冷却期，或这个题材本来就少），建议补拍。';}"
+    "else{box.className='hint ok';box.textContent='✓ 已按要求召回 '+d.count+' 张。';}"
     "lastRecall=d;renderCaptionPanel(d);renderExportButton(d);});});"
     "document.getElementById('export-btn').addEventListener('click',function(){"
     "if(!lastRecall||!lastRecall.platform||!exportSlots.length){return;}"
@@ -974,32 +988,65 @@ class MediaConsoleApp:
             }
 
         limit = top_k or 1
+        # 先按档位分批、再轮询各个位次：这样"精准档"对所有位次都先跑一遍，
+        # 不会出现靠前的位次用放宽档把靠后位次唯一匹配的那张图抢走。
+        pools_by_order = {
+            slot.order: slot_pools(slot, assets, extra_terms=extra_terms)
+            for slot in profile.slots
+        }
+        picks_by_order: dict[int, list[Any]] = {slot.order: [] for slot in profile.slots}
+        levels_by_order: dict[int, list[str]] = {slot.order: [] for slot in profile.slots}
+        used_ids: set[str] = set()
+
+        level_names = [level for level, _pool in pools_by_order[profile.slots[0].order]]
+        for level in level_names:
+            for slot in profile.slots:
+                picked = picks_by_order[slot.order]
+                if len(picked) >= limit:
+                    continue
+                pool = next(
+                    (items for key, items in pools_by_order[slot.order] if key == level), []
+                )
+                fresh = [
+                    (score, asset) for score, asset in pool if asset.asset_id not in used_ids
+                ]
+                if not fresh:
+                    continue
+                got = self.policy.recall(
+                    [MediaCandidate(asset=asset, similarity=score) for score, asset in fresh],
+                    top_k=limit - len(picked),
+                    now=now,
+                )
+                if got:
+                    picked.extend(got)
+                    levels_by_order[slot.order].append(level)
+                    used_ids.update(pick.asset_id for pick in got)
+
         slots: list[dict[str, Any]] = []
         flat: list[dict[str, Any]] = []
         for slot in profile.slots:
-            scored = [
-                (slot_score(slot, asset, extra_terms=extra_terms), asset) for asset in assets
-            ]
-            scored = [(score, asset) for score, asset in scored if score > 0]
-            # 报告指定的"首选形态"（视频 / 图集）是硬口径，不能靠权重随机压过去
-            scored = prefer_media_kind(slot, scored)
-            # 位次要求明确：只在最高分那一档里随机，保证挑得准
-            scored = top_tier(scored)
-            candidates = [
-                MediaCandidate(asset=asset, similarity=score) for score, asset in scored
-            ]
-            picks = self.policy.recall(candidates, top_k=limit, now=now)
+            picks = picks_by_order[slot.order]
+            levels = levels_by_order[slot.order]
+            pools = pools_by_order[slot.order]
             payloads = [self._pick_payload(pick) for pick in picks]
+            weakest = weakest_level(levels)
+            strict_size = len(pools[0][1]) if pools else 0
+            widest = max((len(pool) for _level, pool in pools), default=0)
             slots.append(
                 {
                     "order": slot.order,
                     "role": slot.role,
                     "note": slot.note,
                     "media_kind": slot.media_kind,
-                    "matched": len(scored),
-                    # 有素材但全在冷却期：提示"等冷却"，而不是让人白跑一趟去补拍
-                   "picks": payloads,
-                    "blocked_by_cooldown": bool(scored) and not picks,
+                    # 严格池有多少候选（原来的 matched 口径），便于判断"是素材真的没有"
+                    "matched": strict_size,
+                    "available": widest,
+                    "level": weakest,
+                    "level_label": level_label(weakest),
+                    "relaxed": weakest in RELAXED_LEVELS,
+                    "picks": payloads,
+                    # 一张都没出但候选池不空：说明是全在冷却期（或已被同帖别的位次占用）
+                    "blocked_by_cooldown": widest > 0 and not picks,
                 }
             )
             flat.extend(payloads)
@@ -1008,6 +1055,8 @@ class MediaConsoleApp:
             "platform": profile.as_payload(),
             "slots": slots,
             "count": len(flat),
+            "requested": limit * len(profile.slots),
+            "shortfall": max(0, limit * len(profile.slots) - len(flat)),
             "picks": flat,
         }
 
