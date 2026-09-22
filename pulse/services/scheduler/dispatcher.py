@@ -275,6 +275,7 @@ class Dispatcher:
         now: datetime | None = None,
         immediate: bool = False,
         force: bool = False,
+        unified_post_id: str | None = None,
     ) -> PlanOutcome:
         """处理 `pulse.schedule.enqueue {schedule_id}`。
 
@@ -283,6 +284,11 @@ class Dispatcher:
             now: 时间源覆盖。
             immediate: True 时用 `countdown=0` 立即投递（对应"立即发布"）。
             force: True 时跳过配额与限流预检（管理员显式强制；**不**跳过账号状态检查）。
+            unified_post_id: **上游派生时已经 mint 好的幂等键**（A1 生成 variant 时产生）。
+                编排层（A5）应当把它透传进来；不传才由本域兜底 mint 一个。
+                契约 §6 的"幂等保证"要求 `publish_jobs.unified_post_id` 唯一索引与
+                Adapter 的 `find_existing()` 守住**同一个键**——各域各 mint 一个的话，
+                平台侧兜底就认不出"这条内容已经发过"（2026-09-22 修的 F-2）。
 
         Raises:
             AccountUnavailable: 账号不存在或非 `active`（同时触发熔断）。
@@ -339,12 +345,14 @@ class Dispatcher:
                 self.log.warning("限流未通过 %s：%s", account.id, rate.reason)
                 raise RateLimitExceeded(rate.reason, retry_after_s=rate.retry_after_s)
 
-        unified_post_id = (
-            existing.unified_post_id if existing is not None else new_unified_post_id()
+        key = (
+            existing.unified_post_id
+            if existing is not None
+            else (unified_post_id or new_unified_post_id())
         )
         job = PublishJobRecord(
             id=new_job_id(),
-            unified_post_id=unified_post_id,
+            unified_post_id=key,
             schedule_id=schedule.id,
             status=PublishJobStatus.QUEUED,
             account_id=account.id,
@@ -361,7 +369,7 @@ class Dispatcher:
                 decision=decision,
                 rate=rate,
                 reason=(
-                    f"unified_post_id {unified_post_id} 已存在发布任务，"
+                    f"unified_post_id {key} 已存在发布任务，"
                     "跳过重复投递（唯一索引命中）"
                 ),
             )
@@ -475,6 +483,7 @@ class Dispatcher:
         actor: str = "system",
         force: bool = False,
         now: datetime | None = None,
+        unified_post_id: str | None = None,
     ) -> PlanOutcome:
         """立即发布（对应 `POST /api/v1/schedules/{id}/publish`）。
 
@@ -491,7 +500,11 @@ class Dispatcher:
         job = self._jobs.get_by_schedule(schedule.id)
         if job is None or job.is_terminal:
             return self.enqueue_schedule(
-                schedule.id, now=moment, immediate=True, force=force
+                schedule.id,
+                now=moment,
+                immediate=True,
+                force=force,
+                unified_post_id=unified_post_id,
             )
 
         self._require_active_account(schedule.account_id, suspend=True)
@@ -606,6 +619,20 @@ class Dispatcher:
         job = self._require_job(job_id)
         publish_result = st.coerce_publish_result(result)
         target = st.job_status_for_result(publish_result)
+
+        # F-1（2026-09-22 修）：同步平台（Facebook/Reddit/VK 一类 Adapter 直接返回
+        # ok=True, status=published）会给出 dispatching → published 的目标，而契约 §3.3
+        # 只有 dispatching → publishing → published。语义上确实经过了 publishing，
+        # 所以这里补一次中间落库，**不改契约**也能让链路收敛。
+        if (
+            job.status_value is PublishJobStatus.DISPATCHING
+            and target is PublishJobStatus.PUBLISHED
+        ):
+            self.log.debug("同步平台受理即发布：任务 %s 先落 publishing 再落 published", job.id)
+            job = self._jobs.save(
+                job.evolve(status=PublishJobStatus.PUBLISHING, updated_at=moment)
+            )
+
         st.assert_job_transition(job.status_value, target)
 
         if target is PublishJobStatus.PUBLISHED:
@@ -744,12 +771,33 @@ class Dispatcher:
                 "只有 pending_finalize 需要收敛"
             )
 
+        alert: str | None = None
         if result is not None:
-            target = st.job_status_for_result(st.coerce_publish_result(result))
-            if target is not PublishJobStatus.PENDING_FINALIZE:
+            publish_result = st.coerce_publish_result(result)
+            target = st.job_status_for_result(publish_result)
+            if target in (PublishJobStatus.PUBLISHED, PublishJobStatus.FAILED):
+                # 明确终态：交给统一收敛逻辑（pending_finalize → published/failed 是合法边）
                 return self.apply_publish_result(job.id, result, now=moment)
-            # 平台仍在处理中：保持 pending_finalize，继续轮询（不重复置状态）
-            job = self._jobs.save(job.evolve(updated_at=moment))
+
+            # F-3（2026-09-22 修）：收敛期拿到"仍在处理中"或"可重试错误"时，契约 §3.3
+            # 里 pending_finalize 只有 published / failed 两条出边，**没有**
+            # pending_finalize → retrying。原先直接交给 apply_publish_result 会抛
+            # InvalidTransition：既不再轮询，也不推进，只能干等到 30 分钟超时。
+            # 现在的口径：一律保持 pending_finalize 并继续轮询（错误信息留库、告警一次）。
+            job = self._jobs.save(
+                job.evolve(
+                    error_class=publish_result.error_class or job.error_class,
+                    error_message=publish_result.error_message or job.error_message,
+                    updated_at=moment,
+                )
+            )
+            if target is not PublishJobStatus.PENDING_FINALIZE:
+                alert = (
+                    f"收敛期收到非终态结果（status={publish_result.status}, "
+                    f"error_class={publish_result.error_class}）：按契约 §3.3 保持 "
+                    "pending_finalize 并继续轮询，不推进到其他状态"
+                )
+                self.log.warning("任务 %s %s", job.id, alert)
 
         deadline = job.finalize_deadline
         if deadline is not None and moment >= deadline:
@@ -766,7 +814,7 @@ class Dispatcher:
         )
         job = self._jobs.save(job.evolve(task_id=submission.task_id, updated_at=moment))
         schedule = self._schedules.get(job.schedule_id) if job.schedule_id else None
-        return self._job_outcome(job, schedule)
+        return self._with_alert(self._job_outcome(job, schedule), alert)
 
     def retry_job(self, job_id: str, *, now: datetime | None = None) -> JobOutcome:
         """人工重投（`failed → retrying → publishing`，契约 §3.3）。"""
@@ -917,7 +965,17 @@ class Dispatcher:
     def _set_schedule_status(
         self, schedule: ScheduleRecord, target: ScheduleStatus, moment: datetime
     ) -> ScheduleRecord:
-        """迁移排期状态；必要时先经 `scheduled`（契约 §3.2 的唯一入边）。"""
+        """迁移排期状态；必要时先补中间态，保证每一步都合法（契约 §3.2）。
+
+        两条中间态补充（2026-09-22 修 F-5）：
+
+        1. `pending` → `publishing`/`published`/`failed`：先经 `scheduled`
+           （`pending` 只有 `scheduled` 与 `cancelled` 两条出边）；
+        2. `scheduled` → `published`：先经 `publishing`
+           （`scheduled` 的出边是 `publishing`/`failed`/`cancelled`，没有直连 `published`）。
+           同步平台受理即发布时会走到这条路径——原先第二步会直接抛
+           `scheduled → published` 非法，闭环在排期层断掉。
+        """
 
         if schedule.status_value is target:
             return schedule
@@ -929,6 +987,14 @@ class Dispatcher:
             st.assert_schedule_transition(schedule.status_value, ScheduleStatus.SCHEDULED)
             schedule = self._schedules.save(
                 schedule.evolve(status=ScheduleStatus.SCHEDULED, updated_at=moment)
+            )
+        if (
+            schedule.status_value is ScheduleStatus.SCHEDULED
+            and target is ScheduleStatus.PUBLISHED
+        ):
+            st.assert_schedule_transition(schedule.status_value, ScheduleStatus.PUBLISHING)
+            schedule = self._schedules.save(
+                schedule.evolve(status=ScheduleStatus.PUBLISHING, updated_at=moment)
             )
         st.assert_schedule_transition(schedule.status_value, target)
         return self._schedules.save(schedule.evolve(status=target, updated_at=moment))

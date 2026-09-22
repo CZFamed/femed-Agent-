@@ -13,9 +13,9 @@
   **审批控制台**（A5 未开工，``pulse/api/`` 不存在）。替身按契约 §3.1 / §3.5 / §6
   的语义实现（状态迁移合法 + 动作留痕），并且在用例里显式标注，不假装是真实现。
 
-**已知缺陷**：``test_sync_platform_published_result_breaks_the_chain``
-（``xfail(strict=True)``）—— 同步平台返回 ``published`` 时 A3 会抛
-``InvalidTransition: dispatching → published``，闭环在任务级断掉。详见该用例的注释。
+**已修缺陷（2026-09-22，v1.17.2）**：同步平台返回 ``published`` 时的
+``dispatching → published`` 非法迁移（F-1）、以及 A1 与 A3 各自 mint 幂等键
+导致两层防线不同键（F-2）。两个用例已从 ``xfail`` 转为正式断言。
 """
 
 from __future__ import annotations
@@ -179,17 +179,17 @@ def build_chain(
     )
 
     # 6) A3：入队（经真实队列（记录式），载荷只含 ID）
-    plan = dispatcher.enqueue_schedule(schedule.id)
+    #    幂等键由上游（A1 派生时的 post）传入，A3 不再自己 mint 一个新的
+    plan = dispatcher.enqueue_schedule(
+        schedule.id, unified_post_id=derived.post.unified_post_id
+    )
 
-    # 7) 幂等键衔接（**缺口 #2**）：A1 派生时已经 mint 过一个 ``up_`` 幂等键，
-    #    但 A3 的 ``enqueue_schedule`` 又 mint 了一个新的，两者不相等。
-    #    契约 §6「幂等保证」要求 ``publish_jobs.unified_post_id`` 唯一索引与
-    #    Adapter ``find_existing()`` 是**同一个键**的两层防线，因此在缺口修好之前，
-    #    部署层只能把 A1 的帖重新贴一次 A3 的键再交给 A2。
-    #    这一条由 ``test_a1_and_a3_agree_on_the_idempotency_key``（xfail）盯住。
+    # 7) 幂等键衔接（缺口 #2，2026-09-22 已修）：编排层把 A1 派生时 mint 的幂等键
+    #    透传给 A3，``publish_jobs.unified_post_id`` 与 Adapter 的 ``find_existing()``
+    #    从此守的是**同一个键**（契约 §6「幂等保证」）。
     job = dispatcher.jobs.get(plan.job_id)
     assert job is not None
-    published_post = dataclasses.replace(post, unified_post_id=job.unified_post_id)
+    published_post = post
 
     # 8) A2：网关 + 假 Adapter；sink 把两个域扣在一起（等价于部署层的接线）
     adapter = FakeAdapter("linkedin", behaviour)
@@ -366,22 +366,16 @@ def test_compliance_block_stops_the_chain_before_the_platform(
     assert not blocked.queue.submissions_for(TASK_PUBLISH_FINALIZE)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "A2↔A3 集成缺陷（G-集成 门未过）：同步平台（Adapter 直接返回 ok=True/status=published，"
-        "如 FakeAdapter(PUBLISHED) 代表的 Facebook/Reddit/VK）在 A3 侧会尝试 "
-        "dispatching → published 并抛 InvalidTransition（契约 §3.3 图中没有这条边，"
-        "只有 dispatching → publishing → published）。任务卡在 dispatching、排期卡在 scheduled，"
-        "闭环在任务级断掉。修复方式（二选一，均不违反契约）：① Dispatcher.apply_publish_result "
-        "在目标为 published 且当前为 dispatching 时，先落一次 publishing 再落 published；"
-        "② 契约 §3.3 迁移表补 dispatching → published 直连边。修复后请删除本标记。"
-    ),
-)
-def test_sync_platform_published_result_breaks_the_chain(
+def test_sync_platform_published_result_converges(
     content, binding, dispatcher, queue, identity, clock
 ):
-    """最小复现：把链路的 Adapter 换成"同步平台"（直接 published）。"""
+    """同步平台（Adapter 直接返回 published）也必须收敛到终态。
+
+    2026-09-22 修 F-1：原先会抛 ``InvalidTransition: dispatching → published``
+    （契约 §3.3 没有这条边）。现在 ``apply_publish_result`` 在目标为 published
+    且当前为 dispatching 时先落一次 ``publishing`` 再落 ``published``，
+    排期侧同理（``scheduled`` 先经 ``publishing``），契约不变、链路不再断。
+    """
     sync = build_chain(
         content=content,
         binding=binding,
@@ -400,23 +394,12 @@ def test_sync_platform_published_result_breaks_the_chain(
     assert sync.dispatcher.schedules.get(sync.schedule.id).status_value is ScheduleStatus.PUBLISHED
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "跨域缺口 #2（幂等键不连续）：A1 在派生 UnifiedPost 时就 mint 了 "
-        "``unified_post_id``（契约 §2：「幂等键，全局唯一，透传至平台」），但 A3 的 "
-        "``Dispatcher.enqueue_schedule`` 在建立 publish_jobs 行时**又 mint 了一个新的**"
-        "（dispatcher.py：``unified_post_id = existing.unified_post_id if existing else "
-        "new_unified_post_id()``），而契约 §6 的「幂等保证」要求唯一索引与 Adapter "
-        "``find_existing()`` 是同一个键的两层防线。后果：① publish_jobs 的键无法直接关联到 "
-        "A1 派生的那条帖；② 排期被取消后重建（文档化的熔断后重发路径）会得到新的键，"
-        "平台侧兜底再也认不出「同一条内容已经发过」。修法建议：让 A3 从上游取键"
-        "（例如 create_schedule/enqueue_schedule 接受可选 unified_post_id，或在 variants.fields "
-        "中持久化它），而不是自己 mint。修复后请删除本标记。"
-    ),
-)
 def test_a1_and_a3_agree_on_the_idempotency_key(chain):
-    """A1 派生出的幂等键必须原样出现在 publish_jobs 与投递消息里。"""
+    """A1 派生出的幂等键必须原样出现在 publish_jobs 与投递消息里。
+
+    2026-09-22 修 F-2：``enqueue_schedule`` 新增可选 ``unified_post_id``，
+    编排层把 A1 派生的键透传进来；不传才由 A3 兜底 mint 一个新的。
+    """
     job = chain.dispatcher.jobs.get(chain.plan.job_id)
     assert chain.derived_post.unified_post_id == job.unified_post_id
     assert chain.queue.submissions_for(TASK_PUBLISH_DISPATCH)[0].args[1] == (

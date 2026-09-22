@@ -443,23 +443,13 @@ def test_drill_poll_exception_keeps_waiting_instead_of_publishing(dispatcher, cl
     assert dispatcher.jobs.get(plan.job_id).finalize_deadline is not None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "A3 收敛路径缺陷（G-集成 门未过）：``pending_finalize`` 期间轮询**返回**一个"
-        "可重试错误结果（例如 `PublishResult(ok=False, error_class='transient')`，"
-        "即平台 5xx/超时被正常翻译成结果对象）时，``Dispatcher.finalize_pending`` → "
-        "``apply_publish_result`` 会去执行 ``pending_finalize → retrying``，"
-        "而契约 §3.3 的迁移表里 ``pending_finalize`` 只有 published / failed / cancelled 三条出边，"
-        "于是抛 `InvalidTransition`：既不保持 pending_finalize，也不再安排下一次轮询，"
-        "回执收敛就此静默中断（要等人工发现 30 分钟超时）。"
-        "注意：轮询**抛异常**的路径是好的（tasks.publish_finalize 已 catch，见上一个用例）。"
-        "修法建议：pending_finalize 期间收到可重试/未知结果时，保持 pending_finalize 并重排轮询"
-        "（等价于把该结果当作一次轮询失败），只在超时或拿到明确终态时才改状态。"
-    ),
-)
 def test_drill_poll_returning_retryable_error_keeps_waiting(dispatcher, clock):
-    """最小复现：轮询返回 transient 结果（而不是抛异常）。"""
+    """轮询返回 transient 结果（而不是抛异常）时必须继续等待。
+
+    2026-09-22 修 F-3：原先会去走 ``pending_finalize → retrying``（契约 §3.3 无此边）
+    并抛 ``InvalidTransition``，收敛静默中断。现在非终态结果一律保持
+    ``pending_finalize``、留错误信息并重排下一次轮询，只有超时才告警。
+    """
     _, plan, _ = _pending_job(dispatcher, clock, variant_id="var_a6_poll2")
     clock.advance(minutes=5)
 

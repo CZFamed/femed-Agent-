@@ -5,6 +5,27 @@
 
 ---
 
+## [1.17.2] — 2026-09-22
+
+**修掉 A6 独立验证钉住的三处缺陷：A2 与 A3 的任务级链路不再断。**
+
+### 修复
+
+| 编号 | 位置 | 现象 | 修法 |
+| --- | --- | --- | --- |
+| **F-1**（阻断） | `scheduler/dispatcher.apply_publish_result` | 同步平台（Adapter 直接返回 `published`）触发 `dispatching → published`，契约 §3.3 没有这条边 → `InvalidTransition`，任务卡在 `dispatching`、排期卡在 `scheduled`，闭环断在任务级 | 目标为 `published` 且当前为 `dispatching` 时**先落一次 `publishing` 再落 `published`**；排期侧同理（`scheduled` 先经 `publishing`）。契约不变 |
+| **F-2**（高） | `scheduler/dispatcher.enqueue_schedule` / `publish_now` | A1 派生时已 mint `unified_post_id`，A3 建 `publish_jobs` 时又 mint 一个新的 → 契约 §6「幂等保证」的两层防线（唯一索引 + Adapter `find_existing()`）不是同一个键 | `enqueue_schedule` / `publish_now` 新增可选 `unified_post_id`：编排层把 A1 派生的键透传进来，不传才由 A3 兜底 mint |
+| **F-3**（高） | `scheduler/dispatcher.finalize_pending` | 收敛期轮询**返回**可重试结果时去走 `pending_finalize → retrying`（契约无此边）→ 抛 `InvalidTransition`，既不再轮询也不推进，只能干等 30 分钟超时告警 | 收敛期只接受 `published` / `failed` 两个终态；其余结果一律**保持 `pending_finalize` 并重排下一次轮询**，同时把错误信息留库、告警一次 |
+| F-5（中） | `scheduler/dispatcher._set_schedule_status` | `scheduled → published` 的兜底分支第二步必然抛异常（当前流程不可达），与 F-1 同源 | 与 F-1 一并修：`scheduled → published` 先经 `publishing` |
+
+### 说明
+
+- A6 的 3 个 `xfail(strict=True)` 钉桩用例已转为**正式断言**（用例名相应改为
+  `test_sync_platform_published_result_converges`），全仓 **699 项全绿、0 xfail**。
+- 端到端链路里的"合规判定"与"审批"仍是替身——A4 合规域与 A5 接口层/审批台尚未开工。
+
+---
+
 ## [1.17.1] — 2026-09-22
 
 **独立验证域（A6）交付：跨域契约一致性、端到端集成、风控与幂等演练，并修掉其中一处内容域缺陷。**
