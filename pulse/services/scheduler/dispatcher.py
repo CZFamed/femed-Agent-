@@ -345,11 +345,20 @@ class Dispatcher:
                 self.log.warning("限流未通过 %s：%s", account.id, rate.reason)
                 raise RateLimitExceeded(rate.reason, retry_after_s=rate.retry_after_s)
 
-        key = (
-            existing.unified_post_id
-            if existing is not None
-            else (unified_post_id or new_unified_post_id())
-        )
+        if existing is not None:
+            key = existing.unified_post_id
+        else:
+            key = unified_post_id or new_unified_post_id()
+            if not unified_post_id:
+                # 守卫（2026-09-22，A6 复核提出）：F-2 修好之后，幂等键应当由上游
+                # （A1 派生 → 编排层）透传进来。这里保留兜底，但**必须留痕**——
+                # 一旦有调用方漏传，日志里能看见，而不是悄悄退化成"各域各 mint 一个键"。
+                self.log.warning(
+                    "排期 %s 入队时未收到上游 unified_post_id，由调度域兜底生成 %s；"
+                    "编排层应透传 A1 派生的幂等键（否则平台侧 find_existing 认不出同一条内容）",
+                    schedule.id,
+                    key,
+                )
         job = PublishJobRecord(
             id=new_job_id(),
             unified_post_id=key,

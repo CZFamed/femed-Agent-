@@ -5,6 +5,38 @@
 
 ---
 
+## [1.18.1] — 2026-09-22
+
+**A6 门禁复跑通过（733 → 734 项全绿、0 xfail），并给幂等键兜底路径加护栏。**
+
+### 门禁判定（A6 独立复跑）
+
+| 门 | 判定 | 依据 |
+| --- | --- | --- |
+| G-契约 | 通过 | `ComplianceInfo(blocked=True)` 必带 `findings_ref` 是硬校验；`Finding` 字段与契约 §6 逐列对齐 |
+| G-测试 | 通过 | 全仓 734 passed / 0 failed / 0 xfail |
+| G-边界 | 通过 | 3 个钉桩转正式断言时**断言本体未改**，只删了 `xfail` marker |
+| G-合规 | 通过（机制层） | A4 34 项；制裁输出强制带免责口径，全域无"合法/无风险"类结论性表述 |
+| G-幂等 | 通过 | `enqueue_schedule(unified_post_id=…)` 把 A1 的键透传到 `publish_jobs` 与投递参数 |
+| G-集成 | 通过（假 Adapter） | 同步平台收敛在 `apply_publish_result` 先落 `publishing` 再落 `published` |
+
+### 修复
+
+- **幂等键兜底的留痕守卫**：`enqueue_schedule` 在调用方**没传** `unified_post_id` 时仍会兜底
+  mint 一个键（保留兼容），但现在会写一条 WARNING，把"哪个排期漏传了"直接暴露在日志里——
+  避免将来新调用方漏传时又悄悄退化成 F-2（各域各 mint 一个键）。新增回归用例
+  `test_enqueue_uses_upstream_idempotency_key_and_warns_on_fallback`。
+
+### 仍未闭合（A6 照实报，未打勾）
+
+| 缺口 | 严重度 | 说明 |
+| --- | --- | --- |
+| **A5 接口层未开工** | 高 | `pulse/api/` 不存在：11 个 REST 端点与审批台都没有，端到端里的"审批"仍是替身，M1 闭环差这一环 |
+| 契约文本自相矛盾 | 中 | §6 DDL 注释写 `waived_by`"warn 才可填"，§3.5 又写 `block` 可由管理员豁免；A4 按 §3.5 实现，契约文本待下次升版对齐 |
+| 制裁清单是空壳 | 中 | 三份清单 `entries` 全空、`updated: TODO(need-real-data)`；只有项目级 `review_hints`（俄罗斯/土耳其等）生效，真实名单待人工按季导入 |
+
+---
+
 ## [1.18.0] — 2026-09-22
 
 **W2 补全之一：合规与治理域（A4）交付——FR-5 的合规预检与制裁筛查落地。**

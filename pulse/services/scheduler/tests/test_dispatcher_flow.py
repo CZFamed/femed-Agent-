@@ -38,6 +38,24 @@ def test_enqueue_is_idempotent(scheduled, dispatcher, queue):
     assert dispatcher.jobs.all_jobs()[0].unified_post_id == dispatcher.jobs.get(first.job_id).unified_post_id
 
 
+def test_enqueue_uses_upstream_idempotency_key_and_warns_on_fallback(
+    scheduled, dispatcher, caplog
+):
+    """幂等键由上游透传；没传时兜底生成但必须留痕（F-2 的回归守卫）。"""
+
+    schedule = scheduled()
+    plan = dispatcher.enqueue_schedule(schedule.id, unified_post_id="up_from_a1")
+    assert dispatcher.jobs.get(plan.job_id).unified_post_id == "up_from_a1"
+
+    other = scheduled()
+    with caplog.at_level("WARNING"):
+        # force=True 只是跳过配额/限流预检（同一账号处于发布冷却中），
+        # 幂等键兜底逻辑与它无关
+        plan2 = dispatcher.enqueue_schedule(other.id, force=True)
+    assert dispatcher.jobs.get(plan2.job_id).unified_post_id.startswith("up_")
+    assert any("未收到上游 unified_post_id" in record.message for record in caplog.records)
+
+
 def test_unique_index_blocks_second_job_for_same_post(
     scheduled, dispatcher, queue
 ):
