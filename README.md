@@ -1,6 +1,6 @@
 # Pulse — 海外社媒内容 Agent（B2B 工业铸件出海）
 
-**当前版本：V1.16.0**（接口契约 v1.1 / 媒体库契约 v1.7.3）
+**当前版本：V1.17.0**（接口契约 v1.1 / 媒体库契约 v1.7.3）
 
 为**菲美得**构建的多平台社媒内容生成与自动发布 Agent。业务基线是 B2B 工业铸件出海：
 客户为**无自有铸造厂的海外机床整机厂**（印度为主，美国 / 台湾次之），
@@ -14,7 +14,7 @@
 
 | 项 | 取值 | 真源 |
 | --- | --- | --- |
-| 产品版本 | **1.16.0** | `pyproject.toml` + `pulse.__version__` |
+| 产品版本 | **1.17.0** | `pyproject.toml` + `pulse.__version__` |
 | 接口契约版本 | **1.1**（冻结） | `pulse.shared.CONTRACT_VERSION` |
 | 媒体库契约版本 | **1.7.3**（冻结） | `pulse/contracts/MEDIA_LIBRARY.md` |
 | 版本策略 | 语义化版本 `MAJOR.MINOR.PATCH` | 见 §5 |
@@ -22,7 +22,7 @@
 
 ```powershell
 & ".venv\Scripts\python.exe" -c "import pulse; print(pulse.__version__, pulse.__contract_version__)"
-# 1.16.0 1.1
+# 1.17.0 1.1
 ```
 
 ---
@@ -106,7 +106,7 @@ uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 
 发布版本使用**带注释标签**，前缀 `v`：
 
-标签与 `pyproject.toml` 的 `version` 保持一致，形如 `v1.16.0`。
+标签与 `pyproject.toml` 的 `version` 保持一致，形如 `v1.17.0`。
 
 > 复核记录：2026-09-17 曾发现标签只到 `v1.13.0`（1.14.0–1.15.2 四个版本漏打、1.15.2 未推送），
 > **当日已补打四个带注释标签并推送**。补打时逐条核对了
@@ -114,7 +114,7 @@ uv pip install --python "D:\agent开发\菲美得\agent\.venv\Scripts\python.exe
 
 ```powershell
 git tag -l --format='%(refname:short)  %(subject)'
-git show v1.16.0 --stat --no-patch
+git show v1.17.0 --stat --no-patch
 ```
 
 ### 4.3 提交消息约定
@@ -171,8 +171,8 @@ TLS 若报 `schannel: AcquireCredentialsHandle failed`，改用 OpenSSL 后端�
 3. 提交、打标签、推送：
 
    ```powershell
-   git commit -am "release: V1.16.0"
-   git tag -a v1.16.0 -m "V1.16.0 — 位次召回逐级放宽，保证数量"
+   git commit -am "release: V1.17.0"
+   git tag -a v1.17.0 -m "V1.17.0 — W1 补全：内容生产域与调度/账号域交付"
    git push origin main --follow-tags
    ```
 

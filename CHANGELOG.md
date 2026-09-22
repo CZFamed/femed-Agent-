@@ -5,6 +5,41 @@
 
 ---
 
+## [1.17.0] — 2026-09-22
+
+**W1 补全：内容生产域（A1）与调度/账号域（A3）交付——生成与调度两条腿接上。**
+
+### 新增
+
+- **内容生产域 `pulse/services/content/`（74 项单测）**：
+  - `brief` 解析与严格校验（一次报全部错误；TikTok 被明确拒绝并说明原因）
+  - 平台 Prompt 模板（**LinkedIn + YouTube 优先**，模板外置为数据），并有一条测试比对
+    媒体域的 `CAPTION_SPECS`，防止两边规格漂移
+  - 话题标签白名单（B2B 工业向；输出必含 `#`、不含空格；越界直接报错不静默丢弃）
+  - 素材选用器：复用媒体域的位次召回与冷却策略，缺口一律标注 `TODO(need-real-data)`
+  - 模型路由（贵模型写长文 / 轻模型改写与自评）+ **token 预算熔断**（默认 60k，超预算抛错而非截断）
+  - Variant 派生：同一 `source_id` 派生多平台，每条都通过 `UnifiedPost` 契约校验
+  - 固定文案桩 `StubCopywriter`：单测与本地跑通全程不调真实模型
+- **调度域 `pulse/services/scheduler/`（137 项单测）**：eager 可测的 Celery 接线、
+  `eta`/`countdown` 延迟投递与取消重排、令牌桶限流 + 发布冷却、**配额预检**
+  （YouTube 1600 单位/次、日配额 10000，预检失败不投递）、best-time 表（返回带偏移的 `scheduled_at`）、
+  账号停用即时熔断。出口消息恒为 `{job_id, unified_post_id}`，只传 ID。
+- **账号与凭据域 `pulse/services/identity/`（63 项单测）**：账号模型与 OAuth 骨架、
+  access/refresh 双生命周期与提前刷新、吊销、Vault/KMS 信封加密（业务层只见句柄不见明文）、
+  Token 脱敏过滤器（日志中永不出现明文）。
+
+### 说明
+
+- 全仓测试 **360 → 634 项全绿**（shared 26 ｜ publish 80 ｜ media 166 ｜ console 88 ｜
+  content 74 ｜ scheduler 137 ｜ identity 63）。
+- **A1 由 root 直接实现**：本次按协同方案 spawn 的三个 A1 实例都没收到任务正文
+  （委派通道投递失败，同批次的 A3 正常），为不阻塞 W1 出口由 root 接手，原因记入 `pulse/tasks/TASKS.md`。
+- **跨域缺口（未在本版解决）**：媒体域的位次口径只覆盖 LinkedIn / Facebook / TikTok / VK，
+  YouTube 虽是 P0-A 但没有画面口径，A1 对它的处理是"不猜顺序、人工配图 + 标注缺口"；
+  YouTube 的文案分段结构亦为本项目自定（平台硬限制除外），待评审确认。
+
+---
+
 ## [1.16.0] — 2026-09-20
 
 **修复"库里一堆图却一张也召回不来"：位次召回改为逐级放宽、保证数量**（媒体库契约 v1.7.2 → v1.7.3）。
