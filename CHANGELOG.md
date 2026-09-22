@@ -5,6 +5,37 @@
 
 ---
 
+## [1.18.0] — 2026-09-22
+
+**W2 补全之一：合规与治理域（A4）交付——FR-5 的合规预检与制裁筛查落地。**
+
+### 新增
+
+- **`pulse/services/compliance/`（34 项单测）**：
+  - 规则引擎：输出与契约 §6 `compliance_findings` 一致的 `rule / severity / message / position`
+    （`position` 带字段名 + 字符偏移 + 片段，审批台能直接定位到哪一句）
+  - 版权规则：素材 `license_status` 为 `pending` 或状态不明 → **block**；`owned` / `licensed` 放行
+  - 敏感词：B2B 工业向最小集，**词表外置**在 `data/sensitive_words.json`（block 级：军事用途/两用物项等）
+  - 平台政策与质量规则：字数上下限、标签数与规范性、emoji 上限、反机器味（模板腔开场、连续感叹号）
+  - **制裁与出口管制筛查**：`clear / hit / review_required` 三类结果 + `lists_checked` 与
+    `evidence` 留痕；除清单外的**项目级风险提示**（俄罗斯/土耳其等）单独一层，不混为法律清单
+  - `block` / `warn` 与豁免留痕：`warn` 豁免必须写豁免人；`block` 默认不可绕过（管理员豁免例外）
+  - 发布前闸门：产出契约 §2 的 `ComplianceInfo`（`blocked=True` 必定带 `findings_ref`，可追溯）
+  - FR-4 的三个"必须逐条复核"触发条件（首次接入账号 / 命中合规告警 / 更换 Brand Guide）
+
+### 说明
+
+- **筛查结论是尽调记录，不是法律豁免**：`clear` 只代表"在所列清单中未命中且已留痕"，
+  任何输出都附带免责口径；`data/sanctions_lists.json` 当前**条目为空**并标注
+  `TODO(need-real-data)`——机制先立起来，真实名单（OFAC SDN / BIS Entity List / EU）由人工按季度导入。
+- 合规域**不 import 内容域内部实现**（生成者不能判定自己合规），只吃 `VariantView` 公开字段。
+- 本域由 **root 直接实现**：A4 的 6 个子 agent 实例（`a4_compliance`、`_v2`、`_v3` 等）都只收到
+  环境上下文、没有收到任务正文；改用"任务正文写进 `pulse/docs/dispatch/HANDOFF_A4.md` 再让子 agent 读"
+  的投递方式仍未解决。原因记入 `pulse/tasks/TASKS.md`。
+- 全仓测试 699 → **733 项全绿**。
+
+---
+
 ## [1.17.2] — 2026-09-22
 
 **修掉 A6 独立验证钉住的三处缺陷：A2 与 A3 的任务级链路不再断。**

@@ -1,0 +1,20 @@
+{
+  "_note": "B2B 工业铸件出海的最小敏感词集。代码只做匹配，改词只改本文件。",
+  "_updated": "TODO(need-real-data)",
+  "block": [
+    {"term": "dual-use", "reason": "两用物项表述，出口管制敏感", "lang": "en"},
+    {"term": "military use", "reason": "军事用途表述", "lang": "en"},
+    {"term": "weapons grade", "reason": "武器级表述", "lang": "en"},
+    {"term": "军用", "reason": "军事用途表述", "lang": "zh"},
+    {"term": "军工", "reason": "军事用途表述", "lang": "zh"},
+    {"term": "两用物项", "reason": "出口管制敏感", "lang": "zh"}
+  ],
+  "warn": [
+    {"term": "missile", "reason": "可能触及出口管制清单，需人工确认", "lang": "en"},
+    {"term": "nuclear", "reason": "可能触及出口管制清单，需人工确认", "lang": "en"},
+    {"term": "aerospace", "reason": "航空/航天类终端用途需人工确认", "lang": "en"},
+    {"term": "defense", "reason": "国防类终端用途需人工确认", "lang": "en"},
+    {"term": "核", "reason": "可能触及出口管制清单，需人工确认", "lang": "zh"},
+    {"term": "航空", "reason": "航空类终端用途需人工确认", "lang": "zh"}
+  ]
+}

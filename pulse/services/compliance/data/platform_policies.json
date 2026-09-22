@@ -1,0 +1,27 @@
+{
+  "_note": "分平台的文案质量口径（字数/标签/emoji）。合规域自己持有一份，不吃 A1 的内部实现；两边口径由 A6 的契约一致性用例盯着。",
+  "_updated": "2026-09-22",
+  "platforms": {
+    "linkedin": {"min_chars": 600, "max_chars": 1200, "hashtag_min": 3, "hashtag_max": 5, "emoji_max": 2},
+    "youtube": {"min_chars": 300, "max_chars": 5000, "hashtag_min": 3, "hashtag_max": 5, "emoji_max": 0},
+    "facebook": {"min_chars": 150, "max_chars": 400, "hashtag_min": 1, "hashtag_max": 2, "emoji_max": 4},
+    "vk": {"min_chars": 500, "max_chars": 1500, "hashtag_min": 2, "hashtag_max": 5, "emoji_max": 2},
+    "reddit": {"min_chars": 200, "max_chars": 2000, "hashtag_min": 0, "hashtag_max": 0, "emoji_max": 0},
+    "instagram": {"min_chars": 80, "max_chars": 400, "hashtag_min": 3, "hashtag_max": 8, "emoji_max": 3}
+  },
+  "banned_phrases": {
+    "block": [
+      "zero risk", "零封号", "guaranteed pass", "保证通过", "guaranteed delivery", "保证交期",
+      "guaranteed quality", "保证质量"
+    ],
+    "warn": [
+      "world-class", "world class", "leading manufacturer", "industry-leading",
+      "no.1", "no. 1", "best price", "cheapest", "best in the world"
+    ]
+  },
+  "machine_flavor": {
+    "_note": "反机器味：这些是模板腔/堆砌腔的典型特征，命中只提示（warn），由人判断",
+    "openers": ["本公司专业生产", "我们是一家专业", "we are a professional", "as a professional manufacturer"],
+    "max_repeated_exclamation": 2
+  }
+}

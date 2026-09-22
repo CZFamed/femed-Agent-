@@ -1,0 +1,33 @@
+{
+  "_note": "制裁与出口管制清单的本地静态副本。**本文件当前不含真实名单数据**——清单条目需要从官方来源导入（每季度更新，见 AGENTS.md §3.4 对 VK 的留痕义务）。在导入真实数据之前，筛查结果的语义只是「在所列清单中未命中，且已留痕」，不构成任何法律结论。",
+  "_updated": "TODO(need-real-data)",
+  "lists": [
+    {
+      "name": "OFAC SDN",
+      "source": "https://ofac.treasury.gov/specially-designated-nationals-and-blocked-persons-list-sdn-human-readable-lists",
+      "updated": "TODO(need-real-data)",
+      "entries": []
+    },
+    {
+      "name": "BIS Entity List",
+      "source": "https://www.bis.doc.gov/index.php/policy-guidance/lists-of-parties-of-concern/entity-list",
+      "updated": "TODO(need-real-data)",
+      "entries": []
+    },
+    {
+      "name": "EU Consolidated Financial Sanctions List",
+      "source": "https://finance.ec.europa.eu/eu-and-world/sanctions-restrictive-measures/overview-sanctions-and-related-resources_en",
+      "updated": "TODO(need-real-data)",
+      "entries": []
+    }
+  ],
+  "review_hints": {
+    "_note": "项目级风险提示（来自尽调结论，不是法律清单）：出现这些关键词时筛查结果置 review_required，必须人工复核后再决定是否接触。土耳其/TAKSAN 已被标记为高风险、不主动开发。",
+    "_updated": "2026-09-22",
+    "keywords": [
+      "russia", "belarus", "iran", "crimea", "syria", "north korea", "dprk",
+      "turkey", "türkiye", "taksan", "dener",
+      "俄罗斯", "白俄罗斯", "伊朗", "克里米亚", "叙利亚", "朝鲜", "土耳其"
+    ]
+  }
+}
