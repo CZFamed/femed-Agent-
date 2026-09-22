@@ -9,15 +9,16 @@ def test_route_table_matches_contract_section_7(app):
     """端点集合与契约 §7 的 11 条**逐字一致**（多一条少一条都要失败）。"""
     expected = {
         ("POST", "/api/v1/briefs"),
-        ("GET", "/api/v1/contents/{content_id}/variants"),
-        ("PATCH", "/api/v1/variants/{variant_id}/status"),
-        ("POST", "/api/v1/variants/{variant_id}/schedule"),
-        ("PATCH", "/api/v1/schedules/{schedule_id}"),
-        ("POST", "/api/v1/schedules/{schedule_id}/publish"),
-        ("GET", "/api/v1/schedules/{schedule_id}/semi-auto"),
+        # 路径参数名与契约 §7 一致：契约统一写 {id}
+        ("GET", "/api/v1/contents/{id}/variants"),
+        ("PATCH", "/api/v1/variants/{id}/status"),
+        ("POST", "/api/v1/variants/{id}/schedule"),
+        ("PATCH", "/api/v1/schedules/{id}"),
+        ("POST", "/api/v1/schedules/{id}/publish"),
+        ("GET", "/api/v1/schedules/{id}/semi-auto"),
         ("GET", "/api/v1/accounts"),
-        ("POST", "/api/v1/accounts/{account_id}/oauth"),
-        ("DELETE", "/api/v1/accounts/{account_id}/credential"),
+        ("POST", "/api/v1/accounts/{id}/oauth"),
+        ("DELETE", "/api/v1/accounts/{id}/credential"),
         ("POST", "/api/v1/compliance/screen"),
     }
 

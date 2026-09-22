@@ -1,43 +1,44 @@
-# 交接单 · A6 门禁复跑（2026-09-22）
+# 交接单 · A6 门禁复跑（第 2 轮，2026-09-22）
 
-> 交付方式说明：2026-09-22 有多个子 agent 实例**只收到环境上下文、没收到任务正文**
-> （A1 ×3、A4 ×3、A5 ×3），只有 A3、A6 正常。为绕开正文投递失败，任务正文放在本文件，
-> spawn 时只发一句话让子 agent 读本文件。读到本文件即为投递成功。
+> 投递说明：这一轮 spawn 时只会发一句话让你读本文件。**如果你读到了本文件，说明投递成功，
+> 本文件就是任务正文**，直接按下面执行即可。
 
-## 1. 背景
+## 1. 为什么又跑一轮
 
-你（A6）在 `v1.17.1` 交付过 65 项独立验证，并钉住 4 个缺陷（F-1/F-2/F-3/F-4，另有 F-5）。
-随后 root 做了两批修复与交付：
+你（A6）在 `v1.17.1` 交付了 65 项独立验证，在 `v1.18.1` 复跑过一次门禁。那一轮的高危缺口只有一条：
+**A5 接口层未开工**。现在 A5 也交付了：
 
 | 版本 | 内容 |
 | --- | --- |
-| `v1.17.2` | 修 F-1（同步平台收敛）、F-2（幂等键透传）、F-3（收敛期保持 pending_finalize）、F-5（排期迁移） |
-| `v1.18.0` | 交付 A4 合规与治理域（`pulse/services/compliance/`，34 项单测） |
+| `v1.17.2` | 修 F-1（同步平台收敛）/ F-2（幂等键透传）/ F-3（收敛期保持 pending_finalize）/ F-5 |
+| `v1.18.0` | 交付 A4 合规与治理域（34 项单测） |
+| `v1.18.1` | 幂等键兜底留痕守卫 |
+| `v1.19.0` | **交付 A5 接口层（`pulse/api/`，32 项单测）：契约 §7 的 11 个端点、审批工作流（FR-4）、半自动导出、看板** |
 
-## 2. 你的任务（有界，别扩散）
+## 2. 你要做的四件事
 
-1. **验证 3 个钉桩用例已转为正式断言，且断言没有被削弱**：
-   - `pulse/tests/test_integration_e2e.py::test_sync_platform_published_result_converges`（原 F-1）
-   - `pulse/tests/test_integration_e2e.py::test_a1_and_a3_agree_on_the_idempotency_key`（原 F-2）
-   - `pulse/tests/test_risk_drills.py::test_drill_poll_returning_retryable_error_keeps_waiting`（原 F-3）
-   逐条说明：断言是否仍然检查"真实行为"（而不是被改成必然通过的空断言）。
-2. **复跑门禁并给判定**（G-契约 / G-测试 / G-边界 / G-合规 / G-幂等 / G-集成）：
+1. **复跑门禁并给判定**（G-契约 / G-测试 / G-边界 / G-合规 / G-幂等 / G-集成）：
    ```powershell
    cd "D:\agent开发\菲美得\agent"
    $env:PYTHONIOENCODING = 'utf-8'
-   & ".venv\Scripts\python.exe" -m pytest -p no:cacheprovider
+   & ".venv\Scripts\python.exe" -m pytest -p no:cacheprovider -o addopts="--import-mode=importlib" -q
    ```
-   （基线：root 实测 **733 项全绿、0 xfail**；版本 `v1.18.0`、契约 v1.1。）
-3. **对新增的 A4 合规域做一次独立抽查**（不必重写它的测试）：
-   - `compliance_findings` 的字段是否与契约 §6 一致；
-   - `block` 是否真的不可被普通用户豁免、`warn` 豁免是否留下 `waived_by`；
-   - `ComplianceInfo(blocked=True)` 是否一定带 `findings_ref`（契约 §2）；
-   - 制裁筛查是否**没有**输出法律结论性表述（只允许"尽调记录 + 免责"口径）。
-4. **明确指出仍未闭合的缺口**：`pulse/api/`（A5：11 个 REST 端点 + 审批台）**仍未开工**，
-   端到端里的"审批"目前是替身。请照实写，不要替它打勾。
+   基线：root 实测 **766 项全绿、0 xfail**；版本 `v1.19.0`、契约 v1.1。
+2. **确认上一轮的 3 个钉桩仍是正式断言**（转断言时断言本体不得被削弱）：
+   `test_sync_platform_published_result_converges`、`test_a1_and_a3_agree_on_the_idempotency_key`、
+   `test_drill_poll_returning_retryable_error_keeps_waiting`。
+3. **对 A5 接口层做独立抽查**（不要重写它的测试）：
+   - 路由集合与契约 §7 的 11 条是否**逐字一致**；
+   - 审批是否符合 FR-4：状态机、留痕含 diff、**三个强制单条复核条件**在整批通过时真的被拒；
+   - **未 approved 的变体是否真的进不了发布池**（排期端点应拒绝）；
+   - 统一错误体是否真为 `{"error":{"code","message","details"}}`，未知异常有没有泄漏内部信息与栈。
+4. **指出仍未闭合的缺口**（照实写，不替任何一项打勾）。已知候选：
+   - 接口层是**应用层实现，没有起 HTTP 服务**（要挂 http.server / Cloudflare Worker 需另写适配层）；
+   - `pulse/console/`（素材库控制台）**还没接审批台**；
+   - OAuth 缺平台应用凭据、制裁清单条目为空（外部数据依赖）；
+   - 契约文本自相矛盾一处：§6 DDL 注释写 `waived_by` 只有 warn 可填，§3.5 写 block 可由管理员豁免。
 
-## 3. 输出要求（重要）
+## 3. 输出要求
 
-**报告控制在 40 行以内**：一张"门禁逐项判定"表 + 一张"仍未闭合缺口"表 + 必要的复现命令。
-不要贴大段测试清单（上一轮的 61 项明细已经入档，这次不需要重复）。
-发现问题只报告、不代改（A6 的既定纪律）。
+**报告控制在 40 行以内**：一张门禁判定表 + 一张未闭合缺口表 + 复现命令。
+发现问题**只报告、不代改**（A6 的既定纪律）。不要贴大段测试清单。

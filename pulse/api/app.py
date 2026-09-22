@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, ClassVar, Mapping, Sequence
 
 from pulse.api.approvals import BATCH_APPROVE, ApprovalService
 from pulse.api.errors import ApiResponse, bad_request, conflict, not_found, unsupported
@@ -71,23 +71,26 @@ class ApiApp:
 
     ROUTES: tuple[tuple[str, str, str], ...] = (
         ("POST", "/api/v1/briefs", "post_brief"),
-        ("GET", "/api/v1/contents/{content_id}/variants", "get_content_variants"),
-        ("PATCH", "/api/v1/variants/{variant_id}/status", "patch_variant_status"),
-        ("POST", "/api/v1/variants/{variant_id}/schedule", "post_variant_schedule"),
-        ("PATCH", "/api/v1/schedules/{schedule_id}", "patch_schedule"),
-        ("POST", "/api/v1/schedules/{schedule_id}/publish", "post_schedule_publish"),
-        ("GET", "/api/v1/schedules/{schedule_id}/semi-auto", "get_semi_auto"),
+        # 路径参数名与契约 §7 逐字一致（契约统一写 {id}）；
+        # 语义别名在 _alias_params() 里补，处理器仍然读 variant_id / schedule_id 这类可读名字
+        ("GET", "/api/v1/contents/{id}/variants", "get_content_variants"),
+        ("PATCH", "/api/v1/variants/{id}/status", "patch_variant_status"),
+        ("POST", "/api/v1/variants/{id}/schedule", "post_variant_schedule"),
+        ("PATCH", "/api/v1/schedules/{id}", "patch_schedule"),
+        ("POST", "/api/v1/schedules/{id}/publish", "post_schedule_publish"),
+        ("GET", "/api/v1/schedules/{id}/semi-auto", "get_semi_auto"),
         ("GET", "/api/v1/accounts", "get_accounts"),
-        ("POST", "/api/v1/accounts/{account_id}/oauth", "post_account_oauth"),
-        ("DELETE", "/api/v1/accounts/{account_id}/credential", "delete_credential"),
+        ("POST", "/api/v1/accounts/{id}/oauth", "post_account_oauth"),
+        ("DELETE", "/api/v1/accounts/{id}/credential", "delete_credential"),
         ("POST", "/api/v1/compliance/screen", "post_compliance_screen"),
     )
 
-    def route_table(self) -> tuple[dict[str, str], ...]:
-        """给控制台/前端用的路由清单。"""
+    @classmethod
+    def route_table(cls) -> tuple[dict[str, str], ...]:
+        """给控制台/前端与契约一致性检查用的路由清单（不需要实例）。"""
         return tuple(
             {"method": method, "path": path, "handler": handler}
-            for method, path, handler in self.ROUTES
+            for method, path, handler in cls.ROUTES
         )
 
     # ---------- 入口 ----------
@@ -115,6 +118,7 @@ class ApiApp:
                 matched = self._match(pattern, target)
                 if matched is None:
                     continue
+                matched = self._alias_params(handler_name, matched)
                 handler = getattr(self, handler_name)
                 return handler(matched, payload, params, actor)
             return not_found(f"没有这个端点：{verb} {target}").response()
@@ -127,6 +131,25 @@ class ApiApp:
         regex = "^" + re.sub(r"\{(\w+)\}", r"(?P<\1>[^/]+)", pattern) + "$"
         found = re.match(regex, target)
         return found.groupdict() if found else None
+
+    #: 契约 §7 统一用 `{id}` 作为路径参数名；这里给处理器补一个可读的语义别名
+    _ID_ALIASES: ClassVar[Mapping[str, str]] = {
+        "get_content_variants": "content_id",
+        "patch_variant_status": "variant_id",
+        "post_variant_schedule": "variant_id",
+        "patch_schedule": "schedule_id",
+        "post_schedule_publish": "schedule_id",
+        "get_semi_auto": "schedule_id",
+        "post_account_oauth": "account_id",
+        "delete_credential": "account_id",
+    }
+
+    @classmethod
+    def _alias_params(cls, handler_name: str, matched: Mapping[str, str]) -> dict[str, str]:
+        params = dict(matched)
+        if "id" in params:
+            params[cls._ID_ALIASES.get(handler_name, "id")] = params["id"]
+        return params
 
     # ---------- 公共小工具 ----------
 
