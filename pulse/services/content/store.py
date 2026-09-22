@@ -156,6 +156,24 @@ class ContentStore:
         self._variants[variant_id] = updated
         return updated
 
+    def set_variant_status(self, variant_id: str, status: VariantStatus) -> VariantRecord:
+        """更新变体状态（契约 §3.1 的审批状态机由 A5 驱动）。
+
+        这里只做落库，不校验迁移是否合法——状态机的裁决在 A5 的审批服务里，
+        本方法保持哑存储，避免"两个地方各有一套状态机"。
+        """
+        current = self.get_variant(variant_id)
+        updated = VariantRecord(
+            id=current.id,
+            source_id=current.source_id,
+            platform=current.platform,
+            status=status if isinstance(status, VariantStatus) else VariantStatus(str(status)),
+            fields=dict(current.fields),
+            ai_score=current.ai_score,
+        )
+        self._variants[variant_id] = updated
+        return updated
+
     def variants_for_source(self, source_id: str) -> tuple[VariantRecord, ...]:
         return tuple(item for item in self._variants.values() if item.source_id == source_id)
 
