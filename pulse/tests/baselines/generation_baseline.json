@@ -1,0 +1,64 @@
+{
+  "model": "StubCopywriter",
+  "cases": [
+    {
+      "brief_id": "b_a6_reg_0001",
+      "platform": "linkedin",
+      "text_len": 704,
+      "hashtags": [
+        "#casting",
+        "#foundry",
+        "#ironcasting",
+        "#lostfoam",
+        "#greyiron"
+      ],
+      "title_len": 0,
+      "score": 100.0,
+      "hard_failures": []
+    },
+    {
+      "brief_id": "b_a6_reg_0002",
+      "platform": "youtube",
+      "text_len": 544,
+      "hashtags": [
+        "#casting",
+        "#foundry",
+        "#ironcasting",
+        "#lostfoam",
+        "#greyiron"
+      ],
+      "title_len": 60,
+      "score": 100.0,
+      "hard_failures": []
+    },
+    {
+      "brief_id": "b_a6_reg_0003",
+      "platform": "facebook",
+      "text_len": 169,
+      "hashtags": [
+        "#casting",
+        "#foundry"
+      ],
+      "title_len": 0,
+      "score": 100.0,
+      "hard_failures": []
+    },
+    {
+      "brief_id": "b_a6_reg_0004",
+      "platform": "vk",
+      "text_len": 359,
+      "hashtags": [
+        "#casting",
+        "#foundry",
+        "#ironcasting",
+        "#lostfoam",
+        "#greyiron"
+      ],
+      "title_len": 0,
+      "score": 85.9,
+      "hard_failures": []
+    }
+  ],
+  "score_avg": 96.475,
+  "score_min": 85.9
+}

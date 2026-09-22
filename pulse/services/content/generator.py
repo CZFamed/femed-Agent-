@@ -33,6 +33,7 @@ from pulse.services.content.variants import (
     build_unified_post,
     media_items_from_picks,
 )
+from pulse.services.media.platforms import platform_profile
 from pulse.shared.enums import ContentType, Platform
 from pulse.shared.models import MediaItem
 
@@ -154,7 +155,13 @@ STUB_TOKENS_PER_PLATFORM: Mapping[str, int] = {
 
 
 def slot_terms_from_selection(selection: MediaSelection | None) -> dict[str, str]:
-    """把选用结果翻成文案里可引用的短语；没有素材的位次留占位符。"""
+    """把选用结果翻成文案里可引用的短语；没有素材的位次留占位符。
+
+    ⚠️ 缺素材时**只能留英文占位符** ``TODO(need-real-data)``：这段文字会被直接拼进
+    ``caption.text``，而契约 §2 要求 ``caption.text`` 是英文主文案、中文只进 ``text_zh``
+    （中文注记若混进正文，就是要发到英文平台上的东西）。
+    缺哪个位次、为什么要补拍，由 ``missing_slot_gaps`` 以缺口形式另行说明。
+    """
     terms: dict[str, str] = {}
     for order, key in SLOT_TERM_KEYS.items():
         phrase = None
@@ -163,8 +170,30 @@ def slot_terms_from_selection(selection: MediaSelection | None) -> dict[str, str
                 if slot.order == order and slot.picks:
                     phrase = slot.picks[0].file_name
                     break
-        terms[key] = phrase or f"TODO(need-real-data)（位次{order} 缺素材）"
+        terms[key] = phrase or NEED_REAL_DATA
     return terms
+
+
+def missing_slot_gaps(
+    selection: MediaSelection | None, expected_orders: set[int]
+) -> tuple[str, ...]:
+    """列出"位次缺素材"的缺口（中文说明走这里，不进 ``caption.text``）。
+
+    ``expected_orders`` 是该平台确实定义了的位次；没定义的位次不算缺口
+    （例如某平台只有 3 格，就不该因为第 4 格没图而报补拍）。
+    """
+    gaps: list[str] = []
+    for order, key in SLOT_TERM_KEYS.items():
+        if order not in expected_orders:
+            continue
+        has_pick = False
+        if selection is not None:
+            has_pick = any(slot.order == order and slot.picks for slot in selection.slots)
+        if not has_pick:
+            gaps.append(
+                f"{NEED_REAL_DATA}：位次{order}（{key}）缺素材，正文只保留了英文占位符"
+            )
+    return tuple(gaps)
 
 
 class StubCopywriter:
@@ -298,8 +327,15 @@ class ContentService:
                     "本次未自动选素材，需要人工配图或先补齐该平台的位次定义",
                 )
 
+        profile = platform_profile(template.platform)
+        expected_orders = {slot.order for slot in profile.slots} if profile is not None else set()
         media_brief = selection.media_brief() if selection is not None else ""
-        gaps = (selection.gaps if selection is not None else ()) + extra_gaps
+        # 缺口说明一律走这里（中文），正文只留英文占位符——契约 §2 的 text/text_zh 分工
+        gaps = (
+            (selection.gaps if selection is not None else ())
+            + missing_slot_gaps(selection, expected_orders)
+            + extra_gaps
+        )
         request = CopyRequest(
             platform=template.platform,
             brief=brief,
