@@ -23,7 +23,9 @@
 | A5 接口层与控制台 | W2 | **未开工** | `pulse/api/` 不存在；`pulse/console/` 目前只服务素材库，**不是**审批控制台 |
 | A6 独立验证 | W2 | **DONE**（2026-09-22） | `pulse/tests/`（65 项：62 通过 + 3 项 `xfail`）：契约一致性、端到端集成、风控与幂等演练、生成质量回归框架。子 agent `a6_verifier` 交付，root 复核 |
 
-**各域测试分布（2026-09-22）**：shared 26 ｜ publish 80 ｜ media 166 ｜ console 88 ｜ **content 74** ｜ **scheduler 137** ｜ **identity 63** = **634**。
+**各域测试分布（2026-09-22）**：各域单测 shared 26 ｜ publish 80 ｜ media 166 ｜ console 88 ｜
+**content 74** ｜ **scheduler 137** ｜ **identity 63** = **634**；
+跨域验证（A6）`pulse/tests/` **65**（62 通过 + 3 项 xfail 钉桩）→ **全仓 699 项**。
 
 **W2 进度（2026-09-22）**：A6 独立验证**已交付**（+65 → 全仓 699）；
 **A4 合规域与 A5 接口层/审批台仍未开工** —— 与 A1 同样的委派通道投递失败
