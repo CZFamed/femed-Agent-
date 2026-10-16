@@ -31,41 +31,40 @@ MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_DRAIN_BYTES = 32 * 1024 * 1024
 
 
-class PulseRequestHandler(BaseHTTPRequestHandler):
-    """把 HTTP 请求转成 `ApiApp.handle()` 调用。"""
+class ApiRouteMixin:
+    """把 `/api/v1/*` 交给 `ApiApp.handle()`（供多个 HTTP 适配复用）。
 
-    #: 由 server 实例注入
-    app: ApiApp
+    混合进任何 `BaseHTTPRequestHandler` 子类即可：在 `do_GET` / `do_POST` 的开头调用
+    `if self.try_handle_pipeline_api("GET"): return`。素材库控制台就是用它把
+    契约 §7 的 11 个端点直接暴露在同一进程里，页面因此可以用真实 HTTP 调后端。
+
+    注入方式二选一：类属性 `pipeline_app`（推荐）或 `app`（纯 API 服务用这个名字）。
+    """
+
+    #: ApiApp 实例；由 create_server / PulseHttpServer 注入
+    pipeline_app: Any = None
     default_actor: str = "http"
-    server_version = "PulseAPI/1.0"
+    API_PREFIX: str = "/api/v1/"
 
-    # ---- 日志：只记方法/路径/状态，不记头部与 body（可能含凭据） ----
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - 标准库签名
-        message = format % args
-        # BaseHTTPRequestHandler 默认会把首行打进 stderr；这里保留但去掉客户端地址里的端口噪音
-        self.server.log(f"{self.command} {self.path} -> {message}")  # type: ignore[attr-defined]
+    def _pipeline_app(self) -> Any:
+        return getattr(self, "pipeline_app", None) or getattr(self, "app", None)
 
-    # ---- 各 HTTP 方法 ----
-    def do_GET(self) -> None:  # noqa: N802 - 标准库命名
-        self._dispatch("GET")
+    def try_handle_pipeline_api(self, method: str) -> bool:
+        """路径属于 `/api/v1/*` 时处理并返回 True；否则返回 False（交给宿主路由）。"""
+        app = self._pipeline_app()
+        if app is None:
+            return False
+        parsed = urlparse(self.path)  # type: ignore[attr-defined]
+        if not parsed.path.startswith(self.API_PREFIX):
+            return False
+        self._handle_api_request(app, method, parsed)
+        return True
 
-    def do_POST(self) -> None:  # noqa: N802
-        self._dispatch("POST")
+    # ---- 内部：一次 API 请求 ----
 
-    def do_PATCH(self) -> None:  # noqa: N802
-        self._dispatch("PATCH")
-
-    def do_DELETE(self) -> None:  # noqa: N802
-        self._dispatch("DELETE")
-
-    def do_PUT(self) -> None:  # noqa: N802
-        self._dispatch("PUT")
-
-    # ---- 内部 ----
-    def _dispatch(self, method: str) -> None:
-        parsed = urlparse(self.path)
+    def _handle_api_request(self, app: Any, method: str, parsed: Any) -> None:
         query = {key: values[-1] for key, values in parse_qs(parsed.query).items()}
-        length = int(self.headers.get("Content-Length") or 0)
+        length = int(self.headers.get("Content-Length") or 0)  # type: ignore[attr-defined]
         if length > MAX_BODY_BYTES:
             # 关键顺序：**先把客户端发来的 body 排空，再回响应**。
             # 否则客户端还在发数据、服务端已经写了响应并关连接，客户端会看到
@@ -88,20 +87,23 @@ class PulseRequestHandler(BaseHTTPRequestHandler):
         try:
             body = self._read_json_body()
         except ValueError as exc:
-            self._write(ApiResponse(400, {"error": {"code": "bad_request", "message": str(exc), "details": {}}}))
+            self._write(
+                ApiResponse(
+                    400,
+                    {"error": {"code": "bad_request", "message": str(exc), "details": {}}},
+                )
+            )
             return
 
-        actor = self.headers.get("X-Actor") or self.default_actor
-        response = self.app.handle(
-            method, parsed.path, body=body, query=query, actor=str(actor)
-        )
+        actor = self.headers.get("X-Actor") or self.default_actor  # type: ignore[attr-defined]
+        response = app.handle(method, parsed.path, body=body, query=query, actor=str(actor))
         self._write(response)
 
     def _read_json_body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length") or 0)
+        length = int(self.headers.get("Content-Length") or 0)  # type: ignore[attr-defined]
         if length <= 0:
             return {}
-        raw = self.rfile.read(length)
+        raw = self.rfile.read(length)  # type: ignore[attr-defined]
         if not raw:
             return {}
         try:
@@ -117,23 +119,68 @@ class PulseRequestHandler(BaseHTTPRequestHandler):
         remaining = min(length, MAX_DRAIN_BYTES)
         chunk = 64 * 1024
         while remaining > 0:
-            data = self.rfile.read(min(chunk, remaining))
+            data = self.rfile.read(min(chunk, remaining))  # type: ignore[attr-defined]
             if not data:
                 break
             remaining -= len(data)
 
     def _write(self, response: ApiResponse, *, close: bool = False) -> None:
         payload = json.dumps(response.body, ensure_ascii=False).encode("utf-8")
-        self.send_response(response.status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(payload)))
+        self.send_response(response.status)  # type: ignore[attr-defined]
+        self.send_header("Content-Type", "application/json; charset=utf-8")  # type: ignore[attr-defined]
+        self.send_header("Content-Length", str(len(payload)))  # type: ignore[attr-defined]
         # 本地服务，允许控制台页面直连；生产部署应在网关层收敛 CORS
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", "*")  # type: ignore[attr-defined]
         if close:
-            self.send_header("Connection", "close")
-            self.close_connection = True
-        self.end_headers()
-        self.wfile.write(payload)
+            self.send_header("Connection", "close")  # type: ignore[attr-defined]
+            self.close_connection = True  # type: ignore[attr-defined]
+        self.end_headers()  # type: ignore[attr-defined]
+        self.wfile.write(payload)  # type: ignore[attr-defined]
+
+
+class PulseRequestHandler(ApiRouteMixin, BaseHTTPRequestHandler):
+    """纯 API 服务的处理器：所有路径都走 `/api/v1/*`。"""
+
+    app: ApiApp
+    default_actor: str = "http"
+    server_version = "PulseAPI/1.0"
+
+    # ---- 日志：只记方法/路径/状态，不记头部与 body（可能含凭据） ----
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - 标准库签名
+        message = format % args
+        self.server.log(f"{self.command} {self.path} -> {message}")  # type: ignore[attr-defined]
+
+    # ---- 各 HTTP 方法 ----
+    def do_GET(self) -> None:  # noqa: N802 - 标准库命名
+        self._dispatch("GET")
+
+    def do_POST(self) -> None:  # noqa: N802
+        self._dispatch("POST")
+
+    def do_PATCH(self) -> None:  # noqa: N802
+        self._dispatch("PATCH")
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._dispatch("DELETE")
+
+    def do_PUT(self) -> None:  # noqa: N802
+        self._dispatch("PUT")
+
+    def _dispatch(self, method: str) -> None:
+        if self.try_handle_pipeline_api(method):
+            return
+        self._write(
+            ApiResponse(
+                404,
+                {
+                    "error": {
+                        "code": "not_found",
+                        "message": f"没有这个端点：{method} {urlparse(self.path).path}（API 前缀 {self.API_PREFIX}）",
+                        "details": {},
+                    }
+                },
+            )
+        )
 
     def do_OPTIONS(self) -> None:  # noqa: N802 - 预检请求
         self.send_response(204)

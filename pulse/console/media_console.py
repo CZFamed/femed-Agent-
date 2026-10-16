@@ -32,6 +32,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from pulse import __version__
+from pulse.api.http_server import ApiRouteMixin
 from pulse.services.media.catalog import MediaAsset, load_catalog
 from pulse.services.media.categories import (
     CategoryCatalog,
@@ -146,6 +147,8 @@ PAGE_HTML = (
     "</style></head><body>"
     "<header><h1>Pulse 素材库控制台</h1>"
     "<p>品牌级素材池：沧州菲美得 ｜ 冷却 15 天 ｜ 新图优先召回 ｜ 容量低于 112 张红色预警</p>"
+    "<p style='margin-top:8px'><a href='/pipeline' style='color:#cfe0f5'>"
+    "前往内容流水线（审批台）→</a></p>"
     "</header><main>"
     "<div id='banner' class='banner ok'>加载中…</div>"
     "<div class='cards' id='cards'></div>"
@@ -1390,18 +1393,26 @@ def parse_multipart(
     return fields, files
 
 
-class _Handler(BaseHTTPRequestHandler):
+class _Handler(ApiRouteMixin, BaseHTTPRequestHandler):
     app: MediaConsoleApp
+    #: 内容流水线控制台（审批台）：把契约 §7 的 11 个端点暴露在同一进程的 /api/v1/*
+    pipeline: Any = None
     server_version = "PulseMediaConsole/1.0"
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - 标准库签名
         """静默访问日志。"""
 
     def do_GET(self) -> None:  # noqa: N802 - 标准库命名
+        if self.try_handle_pipeline_api("GET"):
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         if path in ("/", "/index.html"):
             self._send_bytes(PAGE_HTML.encode("utf-8"), "text/html; charset=utf-8")
+        elif path == "/pipeline":
+            self._send_bytes(self._pipeline_console().page().encode("utf-8"), "text/html; charset=utf-8")
+        elif path == "/api/pipeline/state":
+            self._send_json(self._pipeline_console().state())
         elif path == "/api/state":
             self._send_json(self.app.state())
         elif path == "/api/asset-image":
@@ -1410,6 +1421,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": "not found"}, status=404)
 
     def do_POST(self) -> None:  # noqa: N802 - 标准库命名
+        if self.try_handle_pipeline_api("POST"):
+            return
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
@@ -1480,6 +1493,39 @@ class _Handler(BaseHTTPRequestHandler):
             )
         except (ValueError, json.JSONDecodeError) as exc:
             self._send_json({"ok": False, "error": f"请求不合法：{exc}"}, status=400)
+
+    def do_PATCH(self) -> None:  # noqa: N802 - 标准库命名
+        """审批与排期改动用 PATCH（契约 §7）；本进程直接转给接口层。"""
+        if self.try_handle_pipeline_api("PATCH"):
+            return
+        self._send_json({"ok": False, "error": "not found"}, status=404)
+
+    def do_DELETE(self) -> None:  # noqa: N802 - 标准库命名
+        """凭据吊销用 DELETE（契约 §7）。"""
+        if self.try_handle_pipeline_api("DELETE"):
+            return
+        self._send_json({"ok": False, "error": "not found"}, status=404)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802 - 标准库命名
+        self.send_response(204)
+        self.send_header("Allow", "GET, POST, PATCH, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Actor")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+        self.end_headers()
+
+    def _pipeline_console(self) -> Any:
+        """取内容流水线控制台。
+
+        ⚠️ 必须是**服务级共享实例**：handler 是每请求新建的，如果在这里懒建，
+        每个请求都会拿到一份全新的内存状态（提交的草稿下一个请求就没了）。
+        实例由 `create_server` 在启动时建好并挂在服务上。
+        """
+        if self.pipeline is None:
+            raise RuntimeError(
+                "审批台未接线：请通过 create_server(..., pipeline=PipelineConsole(...)) 启动"
+            )
+        return self.pipeline
 
     def _parse_upload(self, body: bytes) -> tuple[dict[str, str], str, bytes]:
         """解析 multipart 上传，返回 (表单字段, 文件名, 文件内容)。"""
@@ -1593,11 +1639,46 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+def _default_pipeline_console() -> Any:
+    """默认审批台：**演示接线**（内存存储 + 假队列 + 占位账号）。
+
+    真实接线由部署层调用 `pulse.api.wiring.build_service_app()` 注入
+    `PipelineConsole(app=...)`；这里保证"双击启动就有审批台可用"，
+    并在页面上把"演示"标注出来，不让人误以为已经连上真实账号。
+    """
+    from pulse.api.wiring import build_demo_app
+    from pulse.console.pipeline import PipelineConsole
+
+    print(
+        "提示：审批台正在使用演示接线（内存存储 + 假队列 + 占位账号，不会真的发到平台）。"
+        "真实账号请在部署层用 build_service_app() 注入。",
+        flush=True,
+    )
+    return PipelineConsole(app=build_demo_app(), demo=True)
+
+
 def create_server(
-    app: MediaConsoleApp, *, host: str = "127.0.0.1", port: int = 0
+    app: MediaConsoleApp,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 0,
+    pipeline: Any = None,
 ) -> ThreadingHTTPServer:
-    """创建控制台 HTTP 服务（port=0 时由系统分配空闲端口）。"""
-    handler = type("BoundHandler", (_Handler,), {"app": app})
+    """创建控制台 HTTP 服务（port=0 时由系统分配空闲端口）。
+
+    `pipeline` 是内容流水线控制台（审批台）。传 None 时**在启动时**建一个演示接线，
+    并把契约 §7 的 11 个端点挂到 `/api/v1/*`，页面因此用的是真实 HTTP 调用。
+
+    注意是"启动时建一次"而不是"每请求懒建"：handler 是每请求新建的，
+    懒建会让每个请求拿到一份全新的内存状态（提交的草稿下一个请求就没了）。
+    """
+    console = pipeline if pipeline is not None else _default_pipeline_console()
+    attrs: dict[str, Any] = {
+        "app": app,
+        "pipeline": console,
+        "pipeline_app": console.app,
+    }
+    handler = type("BoundHandler", (_Handler,), attrs)
     return ThreadingHTTPServer((host, port), handler)
 
 

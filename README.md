@@ -1,6 +1,6 @@
 # Pulse — 海外社媒内容 Agent（B2B 工业铸件出海）
 
-**当前版本：V1.20.0**（接口契约 v1.1 / 媒体库契约 v1.7.3）
+**当前版本：V1.21.0**（接口契约 v1.1 / 媒体库契约 v1.7.3）
 
 为**菲美得**构建的多平台社媒内容生成与自动发布 Agent。业务基线是 B2B 工业铸件出海：
 客户为**无自有铸造厂的海外机床整机厂**（印度为主，美国 / 台湾次之），
@@ -14,7 +14,7 @@
 
 | 项 | 取值 | 真源 |
 | --- | --- | --- |
-| 产品版本 | **1.20.0** | `pyproject.toml` + `pulse.__version__` |
+| 产品版本 | **1.21.0** | `pyproject.toml` + `pulse.__version__` |
 | 接口契约版本 | **1.1**（冻结） | `pulse.shared.CONTRACT_VERSION` |
 | 媒体库契约版本 | **1.7.3**（冻结） | `pulse/contracts/MEDIA_LIBRARY.md` |
 | 版本策略 | 语义化版本 `MAJOR.MINOR.PATCH` | 见 §5 |
@@ -22,7 +22,7 @@
 
 ```powershell
 & ".venv\Scripts\python.exe" -c "import pulse; print(pulse.__version__, pulse.__contract_version__)"
-# 1.20.0 1.1
+# 1.21.0 1.1
 ```
 
 ---
@@ -46,6 +46,20 @@ curl http://127.0.0.1:8787/api/v1/accounts
 11 个端点的路径见 `pulse/contracts/INTERFACES.md` §7。生产接线请在部署层调用
 `pulse.api.wiring.build_service_app()` 注入各域服务与真实账号凭据——演示接线里不含任何真实凭据，
 LinkedIn 的 `author_urn` 是占位值。
+
+### 2.0.1 审批台（内容流水线，给运营用）
+
+素材库控制台**已经带上审批台**（同一进程、同一端口）：
+
+```powershell
+# 双击 一键启动_素材库控制台.bat，或手动启动
+& ".venv\Scripts\python.exe" -m pulse.console.launcher
+# 打开 http://127.0.0.1:8765/pipeline（也可从素材库页头点「前往内容流水线」）
+```
+
+页面上能做完：提交 brief → 看草稿与合规命中 → 提交待审 / 通过 / 驳回 / 改稿（备注进留痕 diff）
+→ 排期（显式时区或 best-time）→ 立即发布 / 重排 / 取消 → 半自动导出（正文 + 素材 + 检查清单），
+另有制裁筛查小工具与询盘口径看板。默认是**演示接线**（不会真的发到平台），页面上有醒目提示。
 
 ### 2.1 解释器
 
