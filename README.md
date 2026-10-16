@@ -1,6 +1,6 @@
 # Pulse — 海外社媒内容 Agent（B2B 工业铸件出海）
 
-**当前版本：V1.21.0**（接口契约 v1.1 / 媒体库契约 v1.7.3）
+**当前版本：V1.21.1**（接口契约 v1.1 / 媒体库契约 v1.7.3）
 
 为**菲美得**构建的多平台社媒内容生成与自动发布 Agent。业务基线是 B2B 工业铸件出海：
 客户为**无自有铸造厂的海外机床整机厂**（印度为主，美国 / 台湾次之），
@@ -14,7 +14,7 @@
 
 | 项 | 取值 | 真源 |
 | --- | --- | --- |
-| 产品版本 | **1.21.0** | `pyproject.toml` + `pulse.__version__` |
+| 产品版本 | **1.21.1** | `pyproject.toml` + `pulse.__version__` |
 | 接口契约版本 | **1.1**（冻结） | `pulse.shared.CONTRACT_VERSION` |
 | 媒体库契约版本 | **1.7.3**（冻结） | `pulse/contracts/MEDIA_LIBRARY.md` |
 | 版本策略 | 语义化版本 `MAJOR.MINOR.PATCH` | 见 §5 |
@@ -22,7 +22,7 @@
 
 ```powershell
 & ".venv\Scripts\python.exe" -c "import pulse; print(pulse.__version__, pulse.__contract_version__)"
-# 1.21.0 1.1
+# 1.21.1 1.1
 ```
 
 ---
@@ -254,7 +254,13 @@ PSD 会先解出合并图再识别与预览，导出时另外给一份同画面�
 | 结果：可用 | 地址、密钥、模型都正确，可以开始上传图片 |
 | 阶段：config | `.env` 里还没填 `PULSE_VISION_API_KEY` |
 | 阶段：model | 模型不支持图片输入，请改用 `deepseek-v4-flash-vision-exp` |
-| 阶段：request | 网络或鉴权失败（401 表示 Key 无效） |
+| 阶段：request | 网络或鉴权失败（401 表示 Key 无效）；**若提示"订阅/付款"（HTTP 403），那是 OpenCode 账号的订阅失效，按提示里的链接续订即可，不是密钥问题** |
+
+> 2026-10-16 的一次真实故障：上游返回 HTTP 403，服务端原文是
+> "Your Go subscription ended because its payment method needs authorization"。
+> 这类 403 与"密钥没权限"不同——自检现在会直接说清是订阅/付款问题并附上续订入口，
+> 不要再去重配 Key。上游不可用期间，素材入库会被挡住（`PULSE_MEDIA_REQUIRE_VISION=1`
+> 是刻意设计：宁可挡住，也不让未经识别的素材进 RAG 知识库）；确需应急放行才把它设为 0。
 
 如果提示"没有找到运行环境"或"没有找到文件夹"，说明拷贝不完整：需要连同
 `.venv`（运行环境）和上一层的 `菲美得产品图片`（实拍素材）一起拷贝。

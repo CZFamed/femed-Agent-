@@ -353,6 +353,51 @@ _STATUS_HINTS: dict[int, str] = {
     429: "调用过于频繁或额度用尽，请稍后再试。",
 }
 
+#: 上游"订阅/付款"类故障的关键词。实测 2026-10-16 的一次真实故障：
+#: 返回 HTTP 403，服务端原文是 "Your Go subscription ended because its payment
+#: method needs authorization"，但状态码层面看就是 403——如果只按状态码给建议，
+#: 会让人以为是"密钥没权限"，跑去重新配 Key（白折腾）。
+#: 所以先看服务端原文，是订阅/付款问题就直说订阅/付款问题。
+_BILLING_KEYWORDS: tuple[str, ...] = (
+    "subscription ended",
+    "subscription expired",
+    "subscribe again",
+    "payment method",
+    "billing",
+    "insufficient",
+    "no credit",
+    "credit balance",
+    "quota exceeded",
+    "renew",
+    "欠费",
+    "订阅已到期",
+    "余额不足",
+)
+
+_BILLING_HINT = (
+    "这是**上游账号的订阅/付款状态**问题，不是密钥权限问题："
+    "请在 OpenCode 控制台重新订阅或授权付款方式，然后重试自检。"
+)
+
+
+def billing_issue_reason(provider_message: str) -> str:
+    """服务端原文是否属于"订阅/付款"类故障；是则返回命中的关键词，否则空串。
+
+    单独抽成函数是为了可测与可复用：自检（本模块）与入库失败提示都用它判断，
+    避免两处各写一套关键词。
+    """
+    lowered = (provider_message or "").lower()
+    for keyword in _BILLING_KEYWORDS:
+        if keyword.lower() in lowered:
+            return keyword
+    return ""
+
+
+def _first_url(text: str) -> str:
+    """从服务端原文里抠出第一个 http(s) 链接（续订页往往就在这里）。"""
+    match = re.search(r"https?://[^\s，。；)）]+", text or "")
+    return match.group(0).rstrip(".,;") if match else ""
+
 
 def _provider_error_of(response: Any) -> tuple[str, str]:
     """从错误响应里取出 ``(错误类型, 服务端原文)``。"""
@@ -370,8 +415,17 @@ def _provider_error_of(response: Any) -> tuple[str, str]:
     return "", (body.get("message") or json.dumps(body, ensure_ascii=False))[:300]
 
 
-def _hint_for(status: int, provider_type: str) -> str:
-    return _PROVIDER_HINTS.get(provider_type) or _STATUS_HINTS.get(status, "")
+def _hint_for(status: int, provider_type: str, provider_message: str = "") -> str:
+    """按"错误类型 → 订阅/付款原文 → 状态码"的优先级给处理建议。"""
+    known = _PROVIDER_HINTS.get(provider_type)
+    if known:
+        return known
+    if billing_issue_reason(provider_message):
+        url = _first_url(provider_message)
+        return _BILLING_HINT + (f" 续订入口：{url}" if url else "")
+    if status == 402:
+        return _BILLING_HINT
+    return _STATUS_HINTS.get(status, "")
 
 
 def check_response_complete(body: dict[str, Any]) -> None:
@@ -517,7 +571,7 @@ def post_json(
                     response.status_code,
                     provider_type,
                     provider_message,
-                    _hint_for(response.status_code, provider_type),
+                    _hint_for(response.status_code, provider_type, provider_message),
                 )
             last_error = VisionAPIError(response.status_code)
         time.sleep(RETRY_BACKOFF_S)

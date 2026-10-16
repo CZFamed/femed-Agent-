@@ -17,6 +17,7 @@ from pulse.services.media.describe import (
     VisionAPIError,
     VisionConfig,
     VisionDescriber,
+    billing_issue_reason,
     build_system_prompt,
     build_describer,
     find_unverified_claims,
@@ -304,6 +305,66 @@ def test_api_error_surfaces_provider_message_and_hint() -> None:
     assert excinfo.value.provider_type == "MissingSessionID"
     assert "x-opencode-session" in message
     assert "PULSE_VISION_SESSION" in message  # 带回中文处理建议
+
+
+def test_403_subscription_lapsed_is_reported_as_billing_not_permission() -> None:
+    """2026-10-16 真实故障：上游订阅失效时返回 403，但**不是**密钥权限问题。
+
+    服务端原文是 "Your Go subscription ended because its payment method needs
+    authorization"。如果只按状态码给建议，运营会跑去重配 Key（白折腾），
+    所以这里必须直说"订阅/付款"，并把续订入口带出来。
+    """
+    upstream = (
+        "Upstream request failed: Your Go subscription ended because its payment "
+        "method needs authorization. Subscribe again at "
+        "https://opencode.ai/console/wrk_01M24KKJW8YNJGYX4FXQFECHQV/go."
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403, json={"error": {"type": "server_error", "message": upstream}}
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(VisionAPIError) as excinfo:
+        VisionDescriber(VisionConfig(api_key="k"), client=client).describe(
+            probe_png(), file_name="a.png", process="铸件", sub_process="阀体"
+        )
+
+    message = str(excinfo.value)
+    assert excinfo.value.status == 403
+    assert "订阅" in message and "付款" in message
+    assert "https://opencode.ai/console/wrk_01M24KKJW8YNJGYX4FXQFECHQV/go" in message
+    assert "密钥无该模型的调用权限" not in message  # 不能把方向带偏
+
+
+def test_403_without_billing_text_keeps_permission_hint() -> None:
+    """普通 403（确实是没权限）仍给权限建议，别把两种情况搞混。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403, json={"error": {"type": "forbidden", "message": "model not enabled"}}
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(VisionAPIError) as excinfo:
+        VisionDescriber(VisionConfig(api_key="k"), client=client).describe(
+            probe_png(), file_name="a.png", process="铸件", sub_process="阀体"
+        )
+
+    assert "密钥无该模型的调用权限" in str(excinfo.value)
+
+
+def test_billing_detection_helper_covers_common_wording() -> None:
+    for text in (
+        "Your Go subscription ended because its payment method needs authorization.",
+        "Insufficient credit balance",
+        "订阅已到期，请续订",
+        "余额不足",
+    ):
+        assert billing_issue_reason(text), text
+    assert billing_issue_reason("model not enabled") == ""
+    assert billing_issue_reason("") == ""
 
 
 def test_api_error_handles_non_json_body() -> None:
