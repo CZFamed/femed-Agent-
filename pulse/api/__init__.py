@@ -31,6 +31,13 @@ from pulse.api.errors import (
     too_many,
     unsupported,
 )
+from pulse.api.http_server import PulseHttpServer, main
+from pulse.api.wiring import (
+    AccountSnapshot,
+    IdentityAccountRegistry,
+    build_demo_app,
+    build_service_app,
+)
 
 __all__ = [
     "ACTIONS",
@@ -38,17 +45,22 @@ __all__ = [
     "ApiApp",
     "ApiError",
     "ApiResponse",
+    "AccountSnapshot",
     "ApprovalRecord",
     "ApprovalService",
     "BATCH_APPROVE",
     "BatchOutcome",
     "NEEDS_REVISION",
     "PostRegistry",
+    "PulseHttpServer",
     "REJECT",
     "bad_request",
+    "build_demo_app",
+    "build_service_app",
     "conflict",
     "forbidden",
     "map_exception",
+    "main",
     "not_found",
     "too_many",
     "unsupported",

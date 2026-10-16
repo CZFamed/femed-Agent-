@@ -1,6 +1,6 @@
 # Pulse — 海外社媒内容 Agent（B2B 工业铸件出海）
 
-**当前版本：V1.19.1**（接口契约 v1.1 / 媒体库契约 v1.7.3）
+**当前版本：V1.20.0**（接口契约 v1.1 / 媒体库契约 v1.7.3）
 
 为**菲美得**构建的多平台社媒内容生成与自动发布 Agent。业务基线是 B2B 工业铸件出海：
 客户为**无自有铸造厂的海外机床整机厂**（印度为主，美国 / 台湾次之），
@@ -14,7 +14,7 @@
 
 | 项 | 取值 | 真源 |
 | --- | --- | --- |
-| 产品版本 | **1.19.1** | `pyproject.toml` + `pulse.__version__` |
+| 产品版本 | **1.20.0** | `pyproject.toml` + `pulse.__version__` |
 | 接口契约版本 | **1.1**（冻结） | `pulse.shared.CONTRACT_VERSION` |
 | 媒体库契约版本 | **1.7.3**（冻结） | `pulse/contracts/MEDIA_LIBRARY.md` |
 | 版本策略 | 语义化版本 `MAJOR.MINOR.PATCH` | 见 §5 |
@@ -22,12 +22,30 @@
 
 ```powershell
 & ".venv\Scripts\python.exe" -c "import pulse; print(pulse.__version__, pulse.__contract_version__)"
-# 1.19.1 1.1
+# 1.20.0 1.1
 ```
 
 ---
 
 ## 2. 快速开始
+
+### 2.0 把接口跑起来（可选）
+
+```powershell
+cd "D:\agent开发\菲美得\agent"
+& ".venv\Scripts\python.exe" -m pulse.api.http_server --port 8787
+# 或双击仓库根的 启动API服务.bat
+```
+
+默认起的是**演示接线**（内存存储 + 假队列 + 一个演示账号，**不会真的发到平台**）：
+
+```powershell
+curl http://127.0.0.1:8787/api/v1/accounts
+```
+
+11 个端点的路径见 `pulse/contracts/INTERFACES.md` §7。生产接线请在部署层调用
+`pulse.api.wiring.build_service_app()` 注入各域服务与真实账号凭据——演示接线里不含任何真实凭据，
+LinkedIn 的 `author_urn` 是占位值。
 
 ### 2.1 解释器
 

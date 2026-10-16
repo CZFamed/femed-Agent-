@@ -5,6 +5,45 @@
 
 ---
 
+## [1.20.0] — 2026-10-16
+
+**接口层有了真正的 HTTP 服务——11 个端点不再只是应用层方法。**
+
+### 新增
+
+- **`pulse/api/http_server.py`**：标准库 `http.server` 适配（**不引入新依赖**）。
+  - `PulseHttpServer` 可嵌入（`serve_in_background()` + `base_url`），也可 `serve_forever()` 常驻；
+  - 只做协议翻译：解析 HTTP → `ApiApp.handle()` → 原样写回 `ApiResponse`，业务逻辑一行都不在这层；
+  - 支持 GET / POST / PATCH / DELETE / PUT 与 CORS 预检（OPTIONS 204）；
+  - **请求日志只记方法、路径、状态码**，不记头部与 body（可能含凭据）；
+  - 支持 `X-Actor` 头部作为审批留痕的操作人。
+- **`pulse/api/wiring.py`**：部署接线。
+  - `build_service_app(...)`：生产接线，各域服务由调用方注入；
+  - `IdentityAccountRegistry`：账号**只有 identity 一个真源**，调度域通过它读账号视图
+    （顺带修掉一个隐蔽坑：identity 的 `status` 是枚举，直接丢给调度域会让账号状态检查永远不通过）；
+  - `build_demo_app(...)`：演示接线（内存存储 + 假队列 + 演示账号），明确标注**不含真实凭据、不会真发到平台**。
+- **CLI 与启动脚本**：`python -m pulse.api.http_server [--host] [--port]`；
+  仓库根新增 `启动API服务.bat`（与素材库控制台启动器同风格，双击即用）。
+- **`pulse/api/tests/test_http_server.py`（11 项）**：**真的起服务、真的发 HTTP 请求**
+  （httpx 打临时端口），覆盖提交 → 审批 → 排期 → 立即发布 → 半自动导出全链路、
+  404/400/409/413、`X-Actor` 留痕、错误响应不泄漏内部信息、OPTIONS 预检。
+
+### 修复
+
+- **超大请求体的连接中断**：原先在客户端还在发送 body 时就回响应并关连接，客户端看到的是
+  "连接被中止"（WinError 10053）而不是干净的响应。现在**先按上限排空 body 再回 413**，
+  语义也从 400 改为正确的 `413 payload_too_large`。
+
+### 说明
+
+- 全仓测试 769 → **780 项全绿**。
+- 演示接线起服务实测：`GET /api/v1/accounts` → 200（1 个账号）、`POST /api/v1/briefs` → 201（返回 variant_id）。
+- 看板仍未暴露成 HTTP 端点：契约 §7 只有 11 条路径，加端点要走契约变更流程；
+  看板继续以应用层方法 `ApiApp.dashboard()` 提供，控制台可直接调用。
+- 生产接线仍缺平台凭据（OAuth 的 client_id 等）与真实账号 URN，属外部依赖，未在演示接线里伪造。
+
+---
+
 ## [1.19.1] — 2026-09-22
 
 **接口层路径参数名与契约 §7 逐字对齐；新增"解析契约文本"的独立一致性用例。**
