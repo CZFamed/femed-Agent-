@@ -1,6 +1,6 @@
 # Pulse — 海外社媒内容 Agent（B2B 工业铸件出海）
 
-**当前版本：V1.21.1**（接口契约 v1.1 / 媒体库契约 v1.7.3）
+**当前版本：V1.22.0**（接口契约 v1.1 / 媒体库契约 v1.7.3）
 
 为**菲美得**构建的多平台社媒内容生成与自动发布 Agent。业务基线是 B2B 工业铸件出海：
 客户为**无自有铸造厂的海外机床整机厂**（印度为主，美国 / 台湾次之），
@@ -14,7 +14,7 @@
 
 | 项 | 取值 | 真源 |
 | --- | --- | --- |
-| 产品版本 | **1.21.1** | `pyproject.toml` + `pulse.__version__` |
+| 产品版本 | **1.22.0** | `pyproject.toml` + `pulse.__version__` |
 | 接口契约版本 | **1.1**（冻结） | `pulse.shared.CONTRACT_VERSION` |
 | 媒体库契约版本 | **1.7.3**（冻结） | `pulse/contracts/MEDIA_LIBRARY.md` |
 | 版本策略 | 语义化版本 `MAJOR.MINOR.PATCH` | 见 §5 |
@@ -22,7 +22,7 @@
 
 ```powershell
 & ".venv\Scripts\python.exe" -c "import pulse; print(pulse.__version__, pulse.__contract_version__)"
-# 1.21.1 1.1
+# 1.22.0 1.1
 ```
 
 ---
@@ -261,6 +261,11 @@ PSD 会先解出合并图再识别与预览，导出时另外给一份同画面�
 > 这类 403 与"密钥没权限"不同——自检现在会直接说清是订阅/付款问题并附上续订入口，
 > 不要再去重配 Key。上游不可用期间，素材入库会被挡住（`PULSE_MEDIA_REQUIRE_VISION=1`
 > 是刻意设计：宁可挡住，也不让未经识别的素材进 RAG 知识库）；确需应急放行才把它设为 0。
+
+> **换供应商**（如改用 DeepSeek 官方）见 `.env.example` 里的"DeepSeek 官方"一节。
+> 一条容易踩的坑：**同一个模型名在不同供应商含义不同**——`deepseek-flash` 在 OpenCode Go
+> 上是纯文本模型，在 DeepSeek 官方就是 V4.1-Flash（支持图片输入）。所以自检判断"能不能识图"
+> 会先看供应商 `GET /models` 声明的 `input_modalities`，本地名单只在供应商没给该字段时兜底。
 
 如果提示"没有找到运行环境"或"没有找到文件夹"，说明拷贝不完整：需要连同
 `.venv`（运行环境）和上一层的 `菲美得产品图片`（实拍素材）一起拷贝。

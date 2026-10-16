@@ -22,10 +22,12 @@ from pulse.services.media.describe import (
     build_describer,
     find_unverified_claims,
     heuristic_describe,
+    model_supports_images,
     parse_capture_time,
     probe_png,
     probe_image,
     probe_vision,
+    provider_model_modalities,
     vision_config_from_env,
     vision_model_supports_images,
 )
@@ -365,6 +367,96 @@ def test_billing_detection_helper_covers_common_wording() -> None:
         assert billing_issue_reason(text), text
     assert billing_issue_reason("model not enabled") == ""
     assert billing_issue_reason("") == ""
+
+
+def test_model_supports_images_asks_provider_when_name_list_says_no() -> None:
+    """名称名单只是"某一家供应商的经验"：供应商说能识图就以供应商为准。
+
+    2026-10-16 实测：DeepSeek 官方的 `deepseek-flash` 就是 V4.1-Flash，
+    `input_modalities` 含 image；而 OpenCode Go 的同名模型是纯文本。
+    只看名字会把前者误判，把整个素材库的上传挡死。
+    """
+    from pulse.services.media import describe as describe_module
+
+    describe_module.MODEL_MODALITIES_CACHE_CLEAR()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/models")
+        return httpx.Response(
+            200,
+            json={"data": [{"id": "deepseek-flash", "input_modalities": ["text", "image"]}]},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    config = VisionConfig(
+        base_url="https://api.deepseek.com/v1", api_key="k", model="deepseek-flash"
+    )
+
+    assert vision_model_supports_images("deepseek-flash") is False  # 本地名单仍判否
+    assert model_supports_images(config, client=client) is True    # 供应商说了算
+
+
+def test_model_supports_images_falls_back_when_modalities_missing() -> None:
+    from pulse.services.media import describe as describe_module
+
+    describe_module.MODEL_MODALITIES_CACHE_CLEAR()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": [{"id": "deepseek-flash"}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    config = VisionConfig(
+        base_url="https://api.deepseek.com/v1", api_key="k", model="deepseek-flash"
+    )
+
+    assert model_supports_images(config, client=client) is False
+    assert provider_model_modalities(config, client=client) is None
+
+
+def test_model_modalities_result_is_cached() -> None:
+    from pulse.services.media import describe as describe_module
+
+    describe_module.MODEL_MODALITIES_CACHE_CLEAR()
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(
+            200, json={"data": [{"id": "deepseek-flash", "input_modalities": ["text", "image"]}]}
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    # 用本地名单判否的模型名，才会走到"问供应商"这条路径
+    config = VisionConfig(
+        base_url="https://example.test/v1", api_key="k", model="deepseek-flash"
+    )
+
+    assert model_supports_images(config, client=client) is True
+    assert model_supports_images(config, client=client) is True
+    assert len(calls) == 1, "能力查询必须缓存，否则每张图都多打一次网络"
+
+
+def test_probe_reports_provider_modalities_when_model_is_text_only() -> None:
+    from pulse.services.media import describe as describe_module
+
+    describe_module.MODEL_MODALITIES_CACHE_CLEAR()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(
+                200, json={"data": [{"id": "deepseek-v4-pro", "input_modalities": ["text"]}]}
+            )
+        return httpx.Response(500, json={"error": {"message": "不应走到这里"}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    result = probe_vision(
+        VisionConfig(base_url="https://example.test/v1", api_key="k", model="deepseek-v4-pro"),
+        client=client,
+    )
+
+    assert result["ok"] is False
+    assert result["stage"] == "model"
+    assert "text" in result["message"]  # 把供应商声明的模态写进原因
 
 
 def test_api_error_handles_non_json_body() -> None:

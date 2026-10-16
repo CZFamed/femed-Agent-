@@ -272,7 +272,12 @@ def check_vision(root: str | Path | None = None) -> int:
     print(RULE)
     print(f"  接口地址：{config.endpoint}")
     print(f"  模型：{config.model}")
-    print(f"  会话标识：{config.session}（OpenCode Go 必需，缺了会返回 400）")
+    # 会话头是 OpenCode Go 的硬要求（缺了返回 400）；换到别的 OpenAI 兼容服务时
+    # 它只是被忽略的多余头部，别让提示看起来像"所有供应商都需要它"
+    if "opencode.ai" in config.base_url:
+        print(f"  会话标识：{config.session}（OpenCode Go 必需，缺了会返回 400）")
+    else:
+        print(f"  会话标识：{config.session}（非 OpenCode 端点会忽略该头部）")
     key_state = f"已配置（{len(config.api_key)} 位）" if config.enabled else "未配置"
     print(f"  API Key：{key_state}")
     result = probe_vision(config)

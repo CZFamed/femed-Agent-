@@ -5,6 +5,46 @@
 
 ---
 
+## [1.22.0] — 2026-10-16
+
+**"能不能识图"改以供应商声明为准——同一模型名在不同供应商含义不同，别再被名字挡住。**
+
+### 问题
+
+把视觉模型从 OpenCode Go 换到 DeepSeek 官方后，自检报「阶段：model：模型 deepseek-flash 不能识图」，
+**整个素材库的上传被挡死**。但真因是本地的一张写死名单：
+
+```
+TEXT_ONLY_MODELS = {"deepseek-v4-flash", "deepseek-v4-pro", "deepseek-flash"}
+```
+
+这是 2026-09-11 在 **OpenCode Go** 上的实测结论。而 DeepSeek 官方的同名模型 `deepseek-flash`
+就是 **DeepSeek-V4.1-Flash**，`GET /v1/models` 明确写着 `input_modalities: ["text", "image"]`。
+也就是说：**模型名是"某一家供应商的经验"，不能跨供应商套用**。
+
+### 修复
+
+- 新增 `provider_model_modalities()`：查 OpenAI 兼容端点的 `GET /models`，读 `input_modalities`；
+  结果按 `(base_url, model)` **缓存**，避免每张图多打一次网络。
+- 新增 `model_supports_images(config)` 取代原来的纯名字判断，顺序是：
+  **本地名单命中 → 直接放行**（不发请求）；**本地判否 → 问供应商**；供应商也没给字段 → 退回本地名单。
+- 自检的「阶段：model」现在会写清依据：把供应商声明的模态（如 `text`）或"未提供 input_modalities"
+  一起印出来，并提示可以换用支持图片输入的服务端点。
+- 自检的「会话标识」提示按端点区分：OpenCode 端点提示"必需，缺了会返回 400"，
+  其他 OpenAI 兼容端点提示"会被忽略"。
+- `.env.example` 增加 **DeepSeek 官方**接入说明（`BASE_URL=https://api.deepseek.com/v1`、
+  `API_STYLE=chat`、`MODEL=deepseek-flash`）与"同名不同能力"的解释。
+
+### 验证
+
+- 真实自检（DeepSeek 官方 + 新密钥 + `deepseek-flash`）：**结果：可用**，
+  返回示例描述「画面为纯白空白图，未见可辨识的探针或自检部件细节。」（探针图本来就是空白 PNG）。
+- 新增 4 项测试：供应商声明含 image 时覆盖本地否定判断；供应商没给 `input_modalities` 时退回本地名单；
+  能力查询走缓存（两次调用只发一次请求）；纯文本模型在自检里给出带模态的"阶段：model"原因。
+- 全仓测试 793 → **797 项全绿**。
+
+---
+
 ## [1.21.1] — 2026-10-16
 
 **修一处会把人带偏的报错：上游订阅失效时别再说成"密钥没权限"。**

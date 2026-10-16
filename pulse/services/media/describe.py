@@ -465,6 +465,76 @@ def vision_model_supports_images(model: str) -> bool:
     return model.strip() not in TEXT_ONLY_MODELS
 
 
+#: 供应商声明的模型能力缓存（key: (base_url, model)）。None 表示查不到/不支持查询。
+_MODEL_MODALITIES_CACHE: dict[tuple[str, str], tuple[str, ...] | None] = {}
+
+
+def provider_model_modalities(
+    config: "VisionConfig", *, client: Any | None = None, timeout_s: float = 20.0
+) -> tuple[str, ...] | None:
+    """问供应商：这个模型能吃哪些输入模态（OpenAI 兼容的 `GET /models`）。
+
+    返回 ``("text", "image", ...)``；查不到（没有该端点、响应里没有这个模型、
+    或响应里没有 `input_modalities` 字段）返回 ``None``。
+
+    **为什么要问供应商**：名称白名单是"某一家供应商的经验"，跨供应商不能套用。
+    2026-10-16 实测踩过这个坑：OpenCode Go 的 `deepseek-flash` 是纯文本模型，
+    而 DeepSeek 官方的 `deepseek-flash` 就是 V4.1-Flash，`input_modalities` 明确含 `image`。
+    只看名字会把后者误判成"不能识图"，把整个素材库的上传挡死。
+    """
+    key = (config.base_url.rstrip("/"), config.model.strip().lower())
+    if key in _MODEL_MODALITIES_CACHE:
+        return _MODEL_MODALITIES_CACHE[key]
+
+    import httpx
+
+    url = f"{key[0]}/models"
+    headers = {
+        "Authorization": f"Bearer {config.api_key}",
+        "x-opencode-session": config.session or "pulse-media-library",
+    }
+    modalities: tuple[str, ...] | None = None
+    try:
+        if client is not None:
+            response = client.get(url, headers=headers, timeout=timeout_s)
+        else:
+            response = httpx.get(url, headers=headers, timeout=timeout_s)
+        if response.status_code == 200:
+            body = response.json()
+            for item in (body or {}).get("data") or []:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("id", "")).strip().lower() != key[1]:
+                    continue
+                declared = item.get("input_modalities")
+                if isinstance(declared, list):
+                    modalities = tuple(str(value) for value in declared)
+                break
+    except Exception:  # noqa: BLE001 - 能力查询是"尽力而为"，失败就退回本地名单
+        modalities = None
+    _MODEL_MODALITIES_CACHE[key] = modalities
+    return modalities
+
+
+def model_supports_images(config: "VisionConfig", *, client: Any | None = None) -> bool:
+    """模型是否能识图：先看本地名单，本地判否时再问供应商。
+
+    顺序是刻意的：本地名单命中就不用发网络请求（每张图都问一次会拖慢入库），
+    只有本地说"不行"时才去核对——本地名单可能过时，也可能只是别家供应商的口径。
+    """
+    if vision_model_supports_images(config.model):
+        return True
+    modalities = provider_model_modalities(config, client=client)
+    if modalities is None:
+        return False
+    return "image" in {item.strip().lower() for item in modalities}
+
+
+def MODEL_MODALITIES_CACHE_CLEAR() -> None:
+    """清空能力缓存（测试与"刚换了 Key/端点"时用）。"""
+    _MODEL_MODALITIES_CACHE.clear()
+
+
 def vision_config_from_env(root: Path | None = None) -> VisionConfig:
     """从环境变量（或仓库根 .env）读取视觉模型配置。"""
     file_values = read_env_file((root or Path.cwd()) / ".env")
@@ -708,7 +778,7 @@ class VisionDescriber:
     def describe(
         self, data: bytes, *, file_name: str, process: str, sub_process: str
     ) -> Description:
-        if not vision_model_supports_images(self.config.model):
+        if not model_supports_images(self.config, client=self._client):
             raise TextOnlyModelError(
                 f"模型 {self.config.model} 不能识图（只有文本能力，或需在中国区单独开通）。"
                 f"请改用 {RECOMMENDED_VISION_MODEL}（备选 {FALLBACK_VISION_MODEL}）。"
@@ -741,7 +811,7 @@ class VisionDescriber:
 
         接口不支持视频输入（实测 `input_video` 被拒），所以走抽帧 + 多图这条路。
         """
-        if not vision_model_supports_images(self.config.model):
+        if not model_supports_images(self.config, client=self._client):
             raise TextOnlyModelError(
                 f"模型 {self.config.model} 不能识图（只有文本能力，或需在中国区单独开通）。"
                 f"请改用 {RECOMMENDED_VISION_MODEL}（备选 {FALLBACK_VISION_MODEL}）。"
@@ -907,13 +977,20 @@ def probe_vision(config: VisionConfig, *, client: Any | None = None) -> dict[str
             "stage": "config",
             "message": "未配置 PULSE_VISION_API_KEY，无法调用视觉模型。",
         }
-    if not vision_model_supports_images(config.model):
+    if not model_supports_images(config, client=client):
+        modalities = provider_model_modalities(config, client=client)
+        detail = (
+            f"（供应商声明的输入模态：{'、'.join(modalities)}）"
+            if modalities is not None
+            else "（供应商未提供 input_modalities，按本地名单判断）"
+        )
         return {
             "ok": False,
             "stage": "model",
             "message": (
-                f"模型 {config.model} 不能识图（只有文本能力，或需在中国区单独开通）；"
-                f"请改用 {RECOMMENDED_VISION_MODEL}（备选 {FALLBACK_VISION_MODEL}）。"
+                f"模型 {config.model} 不能识图{detail}；"
+                f"请改用 {RECOMMENDED_VISION_MODEL}（备选 {FALLBACK_VISION_MODEL}），"
+                "或改用支持图片输入的同名模型所在的服务端点。"
             ),
             "model": config.model,
             "endpoint": config.endpoint,
